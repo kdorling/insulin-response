@@ -1,14 +1,56 @@
-# Insulin Response Modeling
+# Insulin Response Modeling System
 
-A machine learning system for analyzing and predicting blood glucose responses after meals. This project compares statistical and ML models using public datasets to understand glucose dynamics across different health populations.
+A Python-based data science platform that analyzes and predicts blood glucose responses after meals. The system processes two distinct data tracks: tabular snapshots (Track A) and continuous time-series data (Track B), applying both statistical and machine learning models to understand glucose dynamics across different health populations.
 
 ## Overview
 
-The system processes two data tracks:
+The system compares statistical and machine learning models using public datasets to understand glucose dynamics in healthy, pre-diabetic, and Type 2 diabetic individuals.
+
+### Data Tracks
+
 - **Track A**: Tabular snapshots from UCI Diabetes dataset (pre/post-meal glucose, insulin doses)
 - **Track B**: Continuous time-series from CGMacros dataset (CGM readings, meal macronutrients, activity, heart rate, demographics)
 
-Models include traditional statistical methods (Linear Regression, ARIMA) and modern ML approaches (Random Forest, SVM, XGBoost, LightGBM, LSTM, Transformer).
+### Models
+
+**Statistical Models:**
+- Linear Regression (Track A)
+- ARIMA/SARIMAX (Track B)
+
+**Machine Learning Models:**
+- Random Forest, SVM, XGBoost, LightGBM (Track A)
+- LSTM, Transformer (Track B)
+
+## Setup Instructions
+
+### Prerequisites
+
+- Python 3.8 or higher
+- pip package manager
+
+### Installation
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd insulin-response-modeling
+```
+
+2. Create a virtual environment (recommended):
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+4. Verify installation:
+```bash
+python verify_dependencies.py
+```
 
 ## Project Structure
 
@@ -28,57 +70,139 @@ data/                # Dataset storage
 outputs/             # Visualizations and results
 ```
 
-## Setup
-
-```bash
-pip install -r requirements.txt
-```
-
-## Usage
+## Usage Examples
 
 ### Data Processing
-```bash
-python src/data_preprocessing.py
+
+```python
+from src.data_preprocessing import UCIDiabetesLoader, CGMacrosLoader, FeatureEngineer
+
+# Load Track A data
+track_a_loader = UCIDiabetesLoader()
+track_a_data = track_a_loader.load()
+
+# Load Track B data
+track_b_loader = CGMacrosLoader()
+track_b_data = track_b_loader.load()
+
+# Engineer features
+engineer = FeatureEngineer()
+track_a_features = engineer.calculate_time_since_meal(track_a_data)
+```
+
+### Model Training
+
+```python
+from src.statistical_models import LinearRegressionModel
+from src.ml_models import RandomForestModel
+
+# Train statistical model
+lr_model = LinearRegressionModel()
+lr_model.fit(X_train, y_train)
+predictions = lr_model.predict(X_test)
+
+# Train ML model
+rf_model = RandomForestModel(n_estimators=100)
+rf_model.fit(X_train, y_train)
+predictions = rf_model.predict(X_test)
 ```
 
 ### Model Evaluation
-```bash
-python src/evaluate.py
+
+```python
+from src.evaluate import ModelEvaluator
+
+evaluator = ModelEvaluator()
+results = evaluator.cross_validate_track_a(rf_model, X, y, k=5)
+print(f"RMSE: {results['rmse']:.2f}")
+print(f"MAE: {results['mae']:.2f}")
+print(f"R²: {results['r2']:.3f}")
 ```
 
-### Exploratory Analysis
-```bash
-jupyter notebook notebooks/EDA.ipynb
+### Hyperparameter Optimization
+
+```python
+from src.evaluate import HyperparameterTuner
+
+tuner = HyperparameterTuner()
+param_grid = {
+    'n_estimators': [50, 100, 200],
+    'max_depth': [10, 20, None]
+}
+best_params = tuner.grid_search(rf_model, param_grid, X, y, cv=5)
+print(f"Best parameters: {best_params}")
+```
+
+### Visualization
+
+```python
+from src.evaluate import Visualizer
+
+viz = Visualizer()
+viz.plot_metric_comparison(results, 'outputs/metrics_comparison.png')
+viz.plot_predicted_vs_actual(y_test, predictions, 'Random Forest', 'outputs/rf_predictions.png')
+viz.plot_residuals(y_test, predictions, 'Random Forest', 'outputs/rf_residuals.png')
 ```
 
 ## Testing
 
+Run all tests:
 ```bash
-# Run all tests
 pytest
-
-# Run unit tests only
-pytest tests/unit/
-
-# Run property tests only
-pytest tests/property/
-
-# Run with coverage
-pytest --cov=src
 ```
 
-## Technology Stack
+Run specific test suites:
+```bash
+# Unit tests only
+pytest tests/unit/
 
-- **Language**: Python 3.x
-- **Data**: pandas, numpy
-- **ML**: scikit-learn, xgboost, lightgbm, torch
-- **Statistics**: statsmodels
-- **Visualization**: matplotlib, seaborn
-- **Testing**: pytest, hypothesis
+# Property-based tests only
+pytest tests/property/
 
-## Data Sources
+# Integration tests only
+pytest tests/integration/
+```
 
-- UCI Diabetes Dataset (Track A)
-- CGMacros Dataset (Track B)
+Run with coverage:
+```bash
+pytest --cov=src --cov-report=html
+```
 
-Place datasets in the `data/` directory before running the pipeline.
+## Exploratory Data Analysis
+
+Launch Jupyter notebook for exploratory analysis:
+```bash
+jupyter notebook notebooks/EDA.ipynb
+```
+
+## Data Validation Rules
+
+- Glucose values must be in range [20, 600] mg/dL
+- Timestamps must be monotonically increasing within participants
+- CGMacros participants 24, 25, 37, 40 are excluded (dropouts)
+- Required columns must be present in datasets
+
+## Error Handling
+
+The system implements comprehensive error handling:
+- Missing/corrupted files: Descriptive errors with file paths
+- Missing columns: ValueError listing all missing columns
+- Out-of-range values: Warnings logged, data points flagged
+- Insufficient data: ValueError with minimum requirements
+- NaN/Inf predictions: RuntimeError with diagnostic information
+
+## Contributing
+
+When contributing to this project:
+1. Follow the existing code structure and naming conventions
+2. Write both unit tests and property-based tests for new features
+3. Ensure all tests pass before submitting changes
+4. Update documentation as needed
+
+## License
+
+[Add license information here]
+
+## Contact
+
+[Add contact information here]
