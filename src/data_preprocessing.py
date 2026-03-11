@@ -1,7 +1,7 @@
 """
 Data preprocessing module for insulin response modeling system.
 
-This module provides data loading and feature engineering capabilities for both
+This module provides data loading capabilities for both
 Track A (UCI Diabetes dataset) and Track B (CGMacros dataset).
 """
 
@@ -34,7 +34,8 @@ class DatasetLoader(ABC):
         self.data_dir = data_dir
         # data_dir is always developer-supplied, not user-facing input, so path
         # traversal validation is intentionally omitted here.
-        os.makedirs(data_dir, exist_ok=True)
+        # Restrict permissions to 0o700 for health data privacy
+        os.makedirs(data_dir, mode=0o700, exist_ok=True)
 
     @abstractmethod
     def download(self) -> bool:
@@ -45,8 +46,7 @@ class DatasetLoader(ABC):
             True if download successful, False otherwise
 
         Raises:
-            ConnectionError: If network errors occur after retries
-            FileNotFoundError: If source URL is invalid
+            NotImplementedError: When subclass has not implemented download
         """
         pass
 
@@ -106,30 +106,15 @@ class UCIDiabetesLoader(DatasetLoader):
             True if download successful
 
         Raises:
-            ConnectionError: If network errors occur after retries
+            NotImplementedError: UCI Diabetes download is not yet implemented
         """
-        import urllib.request
-        import urllib.error
-        import time
-
-        # UCI Diabetes dataset URL (placeholder - actual URL would be used in production)
-        url = "https://archive.ics.uci.edu/ml/machine-learning-databases/diabetes/diabetes.data"
-
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Downloading UCI Diabetes dataset (attempt {attempt + 1}/{max_retries})...")
-                urllib.request.urlretrieve(url, self.dataset_path)
-                logger.info(f"Dataset downloaded successfully to {self.dataset_path}")
-                return True
-            except urllib.error.URLError as e:
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt  # Exponential backoff
-                    logger.warning(f"Download failed: {e}. Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                else:
-                    logger.error(f"Download failed after {max_retries} attempts")
-                    raise ConnectionError(f"Failed to download dataset after {max_retries} attempts: {e}") from e
+        raise NotImplementedError(
+            "UCI Diabetes dataset download is not yet implemented. "
+            "The source format (tab-separated with coded values) requires transformation "
+            "to match the expected CSV schema (pre_meal_glucose, post_meal_glucose, "
+            "insulin_dose, meal_timestamp). Please provide a pre-processed CSV file "
+            "that matches the required columns."
+        )
 
     def validate(self) -> bool:
         """
@@ -184,8 +169,7 @@ class UCIDiabetesLoader(DatasetLoader):
             if missing_columns:
                 raise ValueError(f"Missing required columns: {missing_columns}")
 
-            if 'meal_timestamp' in df.columns:
-                df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'])
+            df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'])
 
             logger.info(f"Loaded {len(df)} records from UCI Diabetes dataset")
             return df[self.required_columns]
@@ -239,42 +223,13 @@ class CGMacrosLoader(DatasetLoader):
             True if download successful
 
         Raises:
-            ConnectionError: If network errors occur after retries
+            NotImplementedError: CGMacros download is not yet implemented
         """
-        import subprocess
-        import time
-
-        # CGMacros dataset repository URL (placeholder - replace with real URL when available)
-        repo_url = "https://github.com/example/cgmacros.git"
-
-        if os.path.exists(self.dataset_dir):
-            logger.info(f"CGMacros dataset already exists at {self.dataset_dir}")
-            return True
-
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Cloning CGMacros repository (attempt {attempt + 1}/{max_retries})...")
-                subprocess.run(
-                    ['git', 'clone', repo_url, '--', self.dataset_dir],
-                    check=True,
-                    capture_output=True,
-                    text=True
-                )
-                logger.info(f"Repository cloned successfully to {self.dataset_dir}")
-                return True
-            except subprocess.CalledProcessError as e:
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    logger.warning(f"Clone failed: {e}. Stderr: {e.stderr}. Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                else:
-                    logger.error(f"Clone failed after {max_retries} attempts")
-                    logger.error("CGMacros dataset unavailable. Please provide synthetic data or manual download.")
-                    raise ConnectionError(f"Failed to clone repository after {max_retries} attempts: {e}") from e
-            except FileNotFoundError as e:
-                logger.error("Git is not installed. Please install git or download the dataset manually.")
-                raise ConnectionError("Git command not found. Please install git.") from e
+        raise NotImplementedError(
+            "CGMacros dataset download is not yet implemented. "
+            "Please provide the dataset files manually or configure a real repository source. "
+            "Expected structure: data/cgmacros/participant_*.csv files."
+        )
 
     def validate(self) -> bool:
         """
@@ -337,9 +292,12 @@ class CGMacrosLoader(DatasetLoader):
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
 
             return df
-        except Exception as e:
+        except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError) as e:
             logger.error(f"Error parsing participant {participant_id}: {e}")
             return None
+        except Exception as e:
+            logger.error(f"Unexpected error parsing participant {participant_id}: {e}")
+            raise
 
     def load(self) -> pd.DataFrame:
         """

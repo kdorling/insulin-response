@@ -13,7 +13,7 @@ This implementation plan breaks down the insulin response modeling system into d
   - Create dependency verification script to check all packages are importable
   - _Requirements: 9.2, 9.3, 9.4, 9.5_
 
-- [-] 2. Implement data loading infrastructure
+- [ ] 2. Implement data loading infrastructure (in progress)
   - [x] 2.1 Create base DatasetLoader class with abstract methods
     - Implement `download()`, `validate()`, and `load()` methods
     - Add error handling for missing/corrupted files
@@ -38,7 +38,7 @@ This implementation plan breaks down the insulin response modeling system into d
     - Add fallback error handling if dataset unavailable
     - _Requirements: 1.3, 1.4, 1.5, 1.6, 1.7_
   
-  - [-] 2.5 Write property test for Track B field extraction
+  - [ ] 2.5 Write property test for Track B field extraction (in progress)
     - **Property 1: Complete Field Extraction**
     - **Validates: Requirements 1.4**
   

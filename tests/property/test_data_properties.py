@@ -47,12 +47,10 @@ def test_track_a_field_extraction(track_a_data):
     For any Track A dataset, when the Data Pipeline processes it,
     all required fields must be present in the output DataFrame.
     """
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-        temp_path = f.name
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = os.path.join(temp_dir, "uci_diabetes.csv")
         track_a_data.to_csv(temp_path, index=False)
 
-    try:
-        temp_dir = os.path.dirname(temp_path)
         loader = UCIDiabetesLoader(data_dir=temp_dir)
         loader.dataset_path = temp_path
 
@@ -66,10 +64,6 @@ def test_track_a_field_extraction(track_a_data):
 
         assert len(result) == len(track_a_data), \
             f"Row count mismatch. Expected: {len(track_a_data)}, Got: {len(result)}"
-
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
 
 
 @st.composite
