@@ -5,11 +5,14 @@ This module provides data loading capabilities for both
 Track A (UCI Diabetes dataset) and Track B (CGMacros dataset).
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 import pandas as pd
 from typing import Optional
 import os
 import logging
+import re
 
 # Library-safe logging: let callers configure logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
@@ -407,11 +410,9 @@ class CGMacrosLoader(DatasetLoader):
         try:
             discovered_ids = []
             for filename in os.listdir(self.dataset_dir):
-                if not (filename.startswith("participant_") and filename.endswith(".csv")):
-                    continue
-                id_str = filename.replace("participant_", "").replace(".csv", "")
-                if id_str.isdigit():
-                    discovered_ids.append(int(id_str))
+                match = re.search(r'^participant_(\d+)\.csv$', filename)
+                if match:
+                    discovered_ids.append(int(match.group(1)))
         except OSError as e:
             raise FileNotFoundError(
                 f"Cannot access dataset directory '{self.dataset_dir}': {e}"

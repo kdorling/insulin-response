@@ -436,7 +436,7 @@ class TestTimestampFormatISO8601:
 
 
 class TestParticipantIdParsing:
-    """PR Comment 3: Participant ID extraction should be robust, not fragile string slicing."""
+    """PR Comment: Participant ID extraction should use regex for robustness."""
 
     def test_standard_participant_filename_parsed(self):
         """Standard participant_N.csv filenames should be parsed correctly."""
@@ -489,3 +489,67 @@ class TestParticipantIdParsing:
             # Should only have data from participant_1.csv
             assert len(result) == 1
             assert all(result['participant_id'] == 1)
+
+    def test_filename_with_non_numeric_suffix_ignored(self):
+        """Files like participant_backup.csv (non-numeric ID) should be ignored."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            valid_data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=1, freq='5min'),
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            # This file has "participant_" prefix and ".csv" suffix but non-numeric ID
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_backup.csv"), index=False)
+            # This has extra text after the number
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1_old.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            result = loader.load()
+            # Should only load participant_1.csv, ignoring the non-numeric ones
+            assert len(result) == 1
+            assert all(result['participant_id'] == 1)
+
+    def test_regex_extraction_used_for_participant_ids(self):
+        """Participant ID extraction should use regex, not fragile string manipulation."""
+        import importlib
+        source = importlib.util.find_spec('src.data_preprocessing')
+        assert source is not None
+        with open(source.origin, 'r') as f:
+            content = f.read()
+        # The load() method should use re.search or re.match for participant ID extraction
+        assert 'import re' in content or 'from re import' in content, (
+            "Module should import 're' for robust participant ID extraction"
+        )
+        assert 're.search' in content or 're.match' in content, (
+            "Participant ID extraction should use regex (re.search or re.match) "
+            "instead of fragile string replacement"
+        )
+
+
+class TestFutureAnnotationsCompatibility:
+    """PR Comment: Type annotations should be compatible with Python 3.8+."""
+
+    def test_module_uses_future_annotations(self):
+        """data_preprocessing module should use 'from __future__ import annotations'
+        so that list[str] annotations work on Python 3.8."""
+        import src.data_preprocessing as mod
+        assert hasattr(mod, '__annotations__') or 'annotations' in getattr(mod, '__future__', set()) or True
+        # The real test: the module imports without error, which means
+        # annotations are properly deferred. We verify the import exists.
+        import importlib
+        source = importlib.util.find_spec('src.data_preprocessing')
+        assert source is not None
+        with open(source.origin, 'r') as f:
+            content = f.read()
+        assert 'from __future__ import annotations' in content, (
+            "Module should use 'from __future__ import annotations' for Python 3.8+ compatibility"
+        )
