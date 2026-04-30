@@ -916,7 +916,10 @@ class TestPyprojectDependencies:
 
     def test_pyproject_has_pandas_dependency(self):
         """pyproject.toml should list pandas>=2.0.0 in dependencies."""
-        import tomllib
+        try:
+            import tomllib
+        except ModuleNotFoundError:
+            import tomli as tomllib
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         pyproject_path = os.path.join(project_root, "pyproject.toml")
         with open(pyproject_path, "rb") as f:
@@ -955,3 +958,46 @@ class TestConftestNoSysPathManipulation:
         assert 'sys.path' not in content, (
             "conftest.py should not manipulate sys.path; use pip install -e . instead"
         )
+
+
+class TestValidationLogConsistency:
+    """PR Comment (Copilot): Validation summary log should report counts consistently."""
+
+    def test_validate_log_reports_non_dropout_counts(self, caplog):
+        """validate() log message should report valid count out of non-dropout total,
+        not out of all participant files (which includes dropouts)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            valid_data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            # One valid non-dropout participant
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+            # One dropout participant
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_24.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            import logging
+            with caplog.at_level(logging.INFO, logger="src.data_preprocessing"):
+                loader.validate()
+
+            # The log should say "1 valid non-dropout ... out of 1 total"
+            # (not "out of 2 total" which would include the dropout file)
+            info_messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+            validation_msgs = [m for m in info_messages if "validation passed" in m.lower()]
+            assert len(validation_msgs) == 1
+            msg = validation_msgs[0]
+            assert "non-dropout" in msg, (
+                f"Log message should mention 'non-dropout' to clarify what's being counted: {msg}"
+            )
+            assert "1 valid" in msg and "out of 1" in msg, (
+                f"Log should report 1 valid out of 1 non-dropout (not 2 total): {msg}"
+            )

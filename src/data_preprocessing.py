@@ -322,11 +322,9 @@ class CGMacrosLoader(DatasetLoader):
         # Filter out dropout participants, consistent with load()
         non_dropout_files = []
         for filename in participant_files:
-            match = re.fullmatch(PARTICIPANT_FILE_REGEX, filename)
-            if match:
-                pid = int(match.group(1))
-                if pid not in DROPOUT_PARTICIPANTS:
-                    non_dropout_files.append(filename)
+            pid = int(re.fullmatch(PARTICIPANT_FILE_REGEX, filename).group(1))
+            if pid not in DROPOUT_PARTICIPANTS:
+                non_dropout_files.append(filename)
 
         if len(non_dropout_files) == 0:
             raise ValueError(
@@ -352,8 +350,8 @@ class CGMacrosLoader(DatasetLoader):
             )
 
         logger.info(
-            f"Dataset validation passed: found {valid_count} valid participant files "
-            f"out of {len(participant_files)} total"
+            f"Dataset validation passed: found {valid_count} valid non-dropout "
+            f"participant files out of {len(non_dropout_files)} total"
         )
         return True
 

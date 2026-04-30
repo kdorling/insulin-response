@@ -125,9 +125,8 @@ def test_track_b_field_extraction(track_b_data_tuple, tmp_path):
     cgmacros_dir = os.path.join(tmp_path, 'cgmacros')
     # Clean up any leftover files from previous Hypothesis iterations
     # since tmp_path is reused across @given examples
-    if os.path.exists(cgmacros_dir):
-        for f in os.listdir(cgmacros_dir):
-            os.remove(os.path.join(cgmacros_dir, f))
+    import shutil
+    shutil.rmtree(cgmacros_dir, ignore_errors=True)
     os.makedirs(cgmacros_dir, exist_ok=True)
 
     participant_file = os.path.join(cgmacros_dir, f'participant_{participant_id}.csv')
