@@ -35,9 +35,17 @@ class DatasetLoader(ABC):
         self.data_dir = data_dir
         # data_dir is always developer-supplied, not user-facing input, so path
         # traversal validation is intentionally omitted here.
-        # Restrict permissions to 0o700 for health data privacy
+        # Restrict permissions to 0o700 for health data privacy (POSIX only)
         os.makedirs(data_dir, mode=0o700, exist_ok=True)
-        os.chmod(data_dir, 0o700)
+        if os.name == "posix":
+            try:
+                os.chmod(data_dir, 0o700)
+            except (PermissionError, OSError) as exc:
+                logger.warning(
+                    "Could not set permissions on data directory '%s' to 0o700: %s",
+                    data_dir,
+                    exc,
+                )
 
     @abstractmethod
     def download(self) -> bool:
@@ -136,7 +144,9 @@ class UCIDiabetesLoader(DatasetLoader):
             if file_size == 0:
                 raise ValueError(f"Dataset file is empty: {self.dataset_path}")
 
-            pd.read_csv(self.dataset_path, nrows=1)
+            sample = pd.read_csv(self.dataset_path, nrows=1)
+            if sample.empty:
+                raise ValueError(f"Dataset file has no data rows (empty): {self.dataset_path}")
 
             logger.info(f"Dataset validation passed: {self.dataset_path}")
             return True
@@ -166,7 +176,7 @@ class UCIDiabetesLoader(DatasetLoader):
             if missing_columns:
                 raise ValueError(f"Missing required columns: {missing_columns}")
 
-            df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'])
+            df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'], dayfirst=False)
 
             # Validate glucose ranges and warn about out-of-range values
             for col in ['pre_meal_glucose', 'post_meal_glucose']:
@@ -178,6 +188,9 @@ class UCIDiabetesLoader(DatasetLoader):
                         f"[{MIN_GLUCOSE}, {MAX_GLUCOSE}] mg/dL"
                     )
 
+            if df.empty:
+                raise ValueError(f"Dataset file has no data rows (empty): {self.dataset_path}")
+
             logger.info(f"Loaded {len(df)} records from UCI Diabetes dataset")
             return df[self.required_columns]
 
@@ -185,7 +198,7 @@ class UCIDiabetesLoader(DatasetLoader):
             raise ValueError(f"Dataset file is empty or corrupted: {self.dataset_path}") from e
         except ValueError:
             raise
-        except (OSError, TypeError, KeyError) as e:
+        except (OSError, TypeError, pd.errors.ParserError) as e:
             raise ValueError(f"Error loading dataset: {e}") from e
 
 
@@ -305,8 +318,7 @@ class CGMacrosLoader(DatasetLoader):
             df['participant_id'] = participant_id
             df['health_group'] = self._categorize_health_group(participant_id)
 
-            if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], dayfirst=False)
 
             # Validate glucose range and warn about out-of-range values
             if 'glucose' in df.columns:
