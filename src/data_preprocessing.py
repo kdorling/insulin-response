@@ -47,6 +47,29 @@ class DatasetLoader(ABC):
                     exc,
                 )
 
+    def _validate_glucose_range(self, df: pd.DataFrame, glucose_columns: list[str],
+                               context: str = "") -> None:
+        """
+        Validate glucose values are within the expected range and log warnings
+        for out-of-range values.
+
+        Args:
+            df: DataFrame containing glucose columns to validate
+            glucose_columns: List of column names containing glucose values
+            context: Optional context string for log messages (e.g., participant ID)
+        """
+        for col in glucose_columns:
+            if col not in df.columns:
+                continue
+            out_of_range = (df[col] < MIN_GLUCOSE) | (df[col] > MAX_GLUCOSE)
+            n_out = out_of_range.sum()
+            if n_out > 0:
+                ctx = f"{context}: " if context else ""
+                logger.warning(
+                    f"{ctx}{n_out} values in '{col}' are out of range "
+                    f"[{MIN_GLUCOSE}, {MAX_GLUCOSE}] mg/dL"
+                )
+
     @abstractmethod
     def download(self) -> bool:
         """
@@ -183,17 +206,10 @@ class UCIDiabetesLoader(DatasetLoader):
             if missing_columns:
                 raise ValueError(f"Missing required columns: {missing_columns}")
 
-            df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'], dayfirst=False)
+            df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'], format='ISO8601')
 
             # Validate glucose ranges and warn about out-of-range values
-            for col in ['pre_meal_glucose', 'post_meal_glucose']:
-                out_of_range = (df[col] < MIN_GLUCOSE) | (df[col] > MAX_GLUCOSE)
-                n_out = out_of_range.sum()
-                if n_out > 0:
-                    logger.warning(
-                        f"{n_out} values in '{col}' are out of range "
-                        f"[{MIN_GLUCOSE}, {MAX_GLUCOSE}] mg/dL"
-                    )
+            self._validate_glucose_range(df, ['pre_meal_glucose', 'post_meal_glucose'])
 
             if df.empty:
                 raise ValueError(f"Dataset file has no data rows (empty): {self.dataset_path}")
@@ -357,17 +373,12 @@ class CGMacrosLoader(DatasetLoader):
             df['participant_id'] = participant_id
             df['health_group'] = self._categorize_health_group(participant_id)
 
-            df['timestamp'] = pd.to_datetime(df['timestamp'], dayfirst=False)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601')
 
             # Validate glucose range and warn about out-of-range values
-            if 'glucose' in df.columns:
-                out_of_range = (df['glucose'] < MIN_GLUCOSE) | (df['glucose'] > MAX_GLUCOSE)
-                n_out = out_of_range.sum()
-                if n_out > 0:
-                    logger.warning(
-                        f"Participant {participant_id}: {n_out} glucose values "
-                        f"out of range [{MIN_GLUCOSE}, {MAX_GLUCOSE}] mg/dL"
-                    )
+            self._validate_glucose_range(
+                df, ['glucose'], context=f"Participant {participant_id}"
+            )
 
             return df
         except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError) as e:
@@ -398,7 +409,7 @@ class CGMacrosLoader(DatasetLoader):
             for filename in os.listdir(self.dataset_dir):
                 if not (filename.startswith("participant_") and filename.endswith(".csv")):
                     continue
-                id_str = filename[len("participant_"):-len(".csv")]
+                id_str = filename.replace("participant_", "").replace(".csv", "")
                 if id_str.isdigit():
                     discovered_ids.append(int(id_str))
         except OSError as e:

@@ -326,3 +326,166 @@ class TestTimestampParsing:
             result = loader.load()
             assert result['timestamp'].iloc[0].month == 3
             assert result['timestamp'].iloc[0].day == 1
+
+
+class TestGlucoseValidationInBaseClass:
+    """PR Comment 1: Glucose range validation should be a shared helper in DatasetLoader."""
+
+    def test_base_class_has_validate_glucose_range_method(self):
+        """DatasetLoader should expose a _validate_glucose_range helper method."""
+        from src.data_preprocessing import DatasetLoader
+        assert hasattr(DatasetLoader, '_validate_glucose_range'), (
+            "DatasetLoader base class should have a _validate_glucose_range method"
+        )
+
+    def test_track_a_uses_shared_glucose_validation(self, caplog):
+        """Track A loader should use the base class glucose validation helper."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data = pd.DataFrame({
+                'pre_meal_glucose': [10.0, 100.0],
+                'post_meal_glucose': [80.0, 700.0],
+                'insulin_dose': [5.0, 10.0],
+                'meal_timestamp': pd.date_range('2024-01-01', periods=2, freq='h'),
+            })
+            data.to_csv(os.path.join(temp_dir, "uci_diabetes.csv"), index=False)
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            import logging
+            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+                result = loader.load()
+
+            assert len(result) == 2
+            warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+            assert any("out of range" in msg.lower() for msg in warning_messages)
+
+    def test_track_b_uses_shared_glucose_validation(self, caplog):
+        """Track B loader should use the base class glucose validation helper."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=2, freq='5min'),
+                'glucose': [5.0, 700.0],
+                'carbs': [30.0, 40.0],
+                'fat': [10.0, 15.0],
+                'protein': [20.0, 25.0],
+                'activity': [1.0, 2.0],
+                'heart_rate': [70.0, 80.0],
+            })
+            data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            import logging
+            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+                result = loader.load()
+
+            assert len(result) == 2
+            warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+            assert any("out of range" in msg.lower() for msg in warning_messages)
+
+
+class TestTimestampFormatISO8601:
+    """PR Comment 2: Timestamp parsing should use format='ISO8601' for performance."""
+
+    def test_track_a_handles_iso8601_timestamps(self):
+        """Track A should parse ISO8601 timestamps correctly."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data = pd.DataFrame({
+                'pre_meal_glucose': [100.0],
+                'post_meal_glucose': [140.0],
+                'insulin_dose': [10.0],
+                'meal_timestamp': ['2024-06-15T14:30:00'],
+            })
+            data.to_csv(os.path.join(temp_dir, "uci_diabetes.csv"), index=False)
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            result = loader.load()
+            ts = result['meal_timestamp'].iloc[0]
+            assert ts.year == 2024
+            assert ts.month == 6
+            assert ts.day == 15
+            assert ts.hour == 14
+            assert ts.minute == 30
+
+    def test_track_b_handles_iso8601_timestamps(self):
+        """Track B should parse ISO8601 timestamps correctly."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            data = pd.DataFrame({
+                'timestamp': ['2024-06-15T14:30:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            result = loader.load()
+            ts = result['timestamp'].iloc[0]
+            assert ts.year == 2024
+            assert ts.month == 6
+            assert ts.day == 15
+            assert ts.hour == 14
+            assert ts.minute == 30
+
+
+class TestParticipantIdParsing:
+    """PR Comment 3: Participant ID extraction should be robust, not fragile string slicing."""
+
+    def test_standard_participant_filename_parsed(self):
+        """Standard participant_N.csv filenames should be parsed correctly."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=2, freq='5min'),
+                'glucose': [100.0, 110.0],
+                'carbs': [30.0, 40.0],
+                'fat': [10.0, 15.0],
+                'protein': [20.0, 25.0],
+                'activity': [1.0, 2.0],
+                'heart_rate': [70.0, 80.0],
+            })
+            data.to_csv(os.path.join(cgmacros_dir, "participant_5.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            result = loader.load()
+            assert all(result['participant_id'] == 5)
+
+    def test_non_participant_files_ignored(self):
+        """Files not matching participant_N.csv pattern should be ignored."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            valid_data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=1, freq='5min'),
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            # Non-matching files should be ignored
+            pd.DataFrame({'col': [1]}).to_csv(
+                os.path.join(cgmacros_dir, "metadata.csv"), index=False
+            )
+            pd.DataFrame({'col': [1]}).to_csv(
+                os.path.join(cgmacros_dir, "participant_notes.csv"), index=False
+            )
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            result = loader.load()
+            # Should only have data from participant_1.csv
+            assert len(result) == 1
+            assert all(result['participant_id'] == 1)
