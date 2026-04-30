@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 MIN_GLUCOSE = 20  # mg/dL
 MAX_GLUCOSE = 600  # mg/dL
 DROPOUT_PARTICIPANTS = [24, 25, 37, 40]
+MAX_PARTICIPANT_ID = 45  # Inclusive upper bound for CGMacros participant IDs
 
 
 class DatasetLoader(ABC):
@@ -36,6 +37,7 @@ class DatasetLoader(ABC):
         # traversal validation is intentionally omitted here.
         # Restrict permissions to 0o700 for health data privacy
         os.makedirs(data_dir, mode=0o700, exist_ok=True)
+        os.chmod(data_dir, 0o700)
 
     @abstractmethod
     def download(self) -> bool:
@@ -76,7 +78,6 @@ class DatasetLoader(ABC):
             ValueError: If required columns are missing or data is corrupted
         """
         pass
-
 
 
 class UCIDiabetesLoader(DatasetLoader):
@@ -135,15 +136,11 @@ class UCIDiabetesLoader(DatasetLoader):
             if file_size == 0:
                 raise ValueError(f"Dataset file is empty: {self.dataset_path}")
 
-            # Try to read first few lines to check for corruption
-            with open(self.dataset_path, 'r') as f:
-                f.read(100)
+            pd.read_csv(self.dataset_path, nrows=1)
 
             logger.info(f"Dataset validation passed: {self.dataset_path}")
             return True
-        except ValueError:
-            raise
-        except OSError as e:
+        except (OSError, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
             raise ValueError(f"Dataset file is corrupted: {self.dataset_path}. Error: {e}") from e
 
     def load(self) -> pd.DataFrame:
@@ -160,7 +157,7 @@ class UCIDiabetesLoader(DatasetLoader):
         """
         if not os.path.exists(self.dataset_path):
             raise FileNotFoundError(f"Dataset file not found: {self.dataset_path}. "
-                                   f"Please run download() first.")
+                                   f"Please provide a pre-processed CSV file.")
 
         try:
             df = pd.read_csv(self.dataset_path)
@@ -171,6 +168,16 @@ class UCIDiabetesLoader(DatasetLoader):
 
             df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'])
 
+            # Validate glucose ranges and warn about out-of-range values
+            for col in ['pre_meal_glucose', 'post_meal_glucose']:
+                out_of_range = (df[col] < MIN_GLUCOSE) | (df[col] > MAX_GLUCOSE)
+                n_out = out_of_range.sum()
+                if n_out > 0:
+                    logger.warning(
+                        f"{n_out} values in '{col}' are out of range "
+                        f"[{MIN_GLUCOSE}, {MAX_GLUCOSE}] mg/dL"
+                    )
+
             logger.info(f"Loaded {len(df)} records from UCI Diabetes dataset")
             return df[self.required_columns]
 
@@ -178,9 +185,8 @@ class UCIDiabetesLoader(DatasetLoader):
             raise ValueError(f"Dataset file is empty or corrupted: {self.dataset_path}") from e
         except ValueError:
             raise
-        except Exception as e:
+        except (OSError, TypeError, KeyError) as e:
             raise ValueError(f"Error loading dataset: {e}") from e
-
 
 
 class CGMacrosLoader(DatasetLoader):
@@ -212,7 +218,7 @@ class CGMacrosLoader(DatasetLoader):
         self.health_groups = {
             'healthy': list(range(1, 16)),  # Participants 1-15
             'pre-diabetic': list(range(16, 32)),  # Participants 16-31
-            't2d': list(range(32, 46))  # Participants 32-45
+            't2d': list(range(32, MAX_PARTICIPANT_ID + 1))  # Participants 32-45
         }
 
     def download(self) -> bool:
@@ -265,6 +271,7 @@ class CGMacrosLoader(DatasetLoader):
         for group, ids in self.health_groups.items():
             if participant_id in ids:
                 return group
+        logger.warning(f"Unknown participant ID {participant_id}, cannot assign health group")
         return 'unknown'
 
     def _parse_participant(self, participant_id: int) -> Optional[pd.DataFrame]:
@@ -275,7 +282,7 @@ class CGMacrosLoader(DatasetLoader):
             participant_id: Participant ID
 
         Returns:
-            DataFrame with participant data, or None if file not found
+            DataFrame with participant data, or None if file not found or missing columns
         """
         participant_file = os.path.join(self.dataset_dir, f"participant_{participant_id}.csv")
 
@@ -285,19 +292,36 @@ class CGMacrosLoader(DatasetLoader):
 
         try:
             df = pd.read_csv(participant_file)
+
+            expected_file_columns = [
+                c for c in self.required_columns
+                if c not in ('participant_id', 'health_group')
+            ]
+            missing = [c for c in expected_file_columns if c not in df.columns]
+            if missing:
+                logger.error(f"Participant {participant_id} missing columns: {missing}")
+                return None
+
             df['participant_id'] = participant_id
             df['health_group'] = self._categorize_health_group(participant_id)
 
             if 'timestamp' in df.columns:
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
 
+            # Validate glucose range and warn about out-of-range values
+            if 'glucose' in df.columns:
+                out_of_range = (df['glucose'] < MIN_GLUCOSE) | (df['glucose'] > MAX_GLUCOSE)
+                n_out = out_of_range.sum()
+                if n_out > 0:
+                    logger.warning(
+                        f"Participant {participant_id}: {n_out} glucose values "
+                        f"out of range [{MIN_GLUCOSE}, {MAX_GLUCOSE}] mg/dL"
+                    )
+
             return df
         except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError) as e:
             logger.error(f"Error parsing participant {participant_id}: {e}")
             return None
-        except Exception as e:
-            logger.error(f"Unexpected error parsing participant {participant_id}: {e}")
-            raise
 
     def load(self) -> pd.DataFrame:
         """
@@ -313,11 +337,11 @@ class CGMacrosLoader(DatasetLoader):
         """
         if not os.path.exists(self.dataset_dir):
             error_msg = (f"Dataset directory not found: {self.dataset_dir}. "
-                        f"Please run download() first or provide synthetic data.")
+                        f"Please provide the dataset files manually.")
             logger.error(error_msg)
             raise FileNotFoundError(error_msg)
 
-        # Discover available participant files rather than assuming range 1..45
+        # Discover available participant files
         try:
             discovered_ids = []
             for filename in os.listdir(self.dataset_dir):
@@ -327,11 +351,15 @@ class CGMacrosLoader(DatasetLoader):
                 if id_str.isdigit():
                     discovered_ids.append(int(id_str))
         except OSError as e:
-            logger.warning(f"Failed to list dataset directory '{self.dataset_dir}': {e}")
-            discovered_ids = []
+            raise FileNotFoundError(
+                f"Cannot access dataset directory '{self.dataset_dir}': {e}"
+            ) from e
 
-        # Fall back to full range if no files discovered
-        participant_ids = sorted(set(discovered_ids)) if discovered_ids else list(range(1, 46))
+        if not discovered_ids:
+            raise FileNotFoundError(
+                f"No participant files found in '{self.dataset_dir}'"
+            )
+        participant_ids = sorted(set(discovered_ids))
 
         all_data = []
         for participant_id in participant_ids:

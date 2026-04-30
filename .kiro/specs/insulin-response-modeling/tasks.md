@@ -20,25 +20,25 @@ This implementation plan breaks down the insulin response modeling system into d
     - _Requirements: 1.1, 10.1_
   
   - [x] 2.2 Implement UCIDiabetesLoader for Track A data
-    - Implement download from UCI Machine Learning Repository
     - Parse CSV to extract pre_meal_glucose, post_meal_glucose, insulin_dose, meal_timestamp
     - Validate required columns are present
+    - Note: `download()` raises `NotImplementedError`; users must provide a pre-processed CSV
     - _Requirements: 1.1, 1.2, 10.2_
   
   - [x] 2.3 Write property test for Track A field extraction
     - **Property 1: Complete Field Extraction**
     - **Validates: Requirements 1.2**
   
-  - [ ] 2.4 Implement CGMacrosLoader for Track B data
-    - Implement clone/download of CGMacros repository
+  - [x] 2.4 Implement CGMacrosLoader for Track B data
     - Parse per-participant CSV files
     - Extract CGM readings, meal macronutrients, activity, heart rate, demographics
     - Exclude participants 24, 25, 37, 40
     - Categorize participants into health groups
     - Add fallback error handling if dataset unavailable
+    - Note: `download()` raises `NotImplementedError`; users must provide dataset files manually
     - _Requirements: 1.3, 1.4, 1.5, 1.6, 1.7_
   
-  - [ ] 2.5 Write property test for Track B field extraction (in progress)
+  - [x] 2.5 Write property test for Track B field extraction
     - **Property 1: Complete Field Extraction**
     - **Validates: Requirements 1.4**
   
