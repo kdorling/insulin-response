@@ -70,8 +70,12 @@ class DatasetLoader(ABC):
             if n_out > 0:
                 ctx = f"{context}: " if context else ""
                 logger.warning(
-                    f"{ctx}{n_out} values in '{col}' are out of range "
-                    f"[{MIN_GLUCOSE}, {MAX_GLUCOSE}] mg/dL"
+                    "%s%s values in '%s' are out of range [%s, %s] mg/dL",
+                    ctx,
+                    n_out,
+                    col,
+                    MIN_GLUCOSE,
+                    MAX_GLUCOSE,
                 )
 
     @abstractmethod
@@ -310,21 +314,21 @@ class CGMacrosLoader(DatasetLoader):
                 f"Cannot read dataset directory: {self.dataset_dir}"
             ) from e
 
-        participant_files = [
-            f for f in dataset_entries
-            if re.fullmatch(PARTICIPANT_FILE_REGEX, f)
-        ]
+        participant_files = []
+        for f in dataset_entries:
+            m = re.fullmatch(PARTICIPANT_FILE_REGEX, f)
+            if m:
+                participant_files.append((f, int(m.group(1))))
         if len(participant_files) == 0:
             raise ValueError(
                 f"No participant CSV files found in dataset directory: {self.dataset_dir}"
             )
 
         # Filter out dropout participants, consistent with load()
-        non_dropout_files = []
-        for filename in participant_files:
-            pid = int(re.fullmatch(PARTICIPANT_FILE_REGEX, filename).group(1))
-            if pid not in DROPOUT_PARTICIPANTS:
-                non_dropout_files.append(filename)
+        non_dropout_files = [
+            (filename, pid) for filename, pid in participant_files
+            if pid not in DROPOUT_PARTICIPANTS
+        ]
 
         if len(non_dropout_files) == 0:
             raise ValueError(
@@ -333,7 +337,7 @@ class CGMacrosLoader(DatasetLoader):
 
         # Verify at least one file is parseable with required columns
         valid_count = 0
-        for filename in non_dropout_files:
+        for filename, _pid in non_dropout_files:
             filepath = os.path.join(self.dataset_dir, filename)
             try:
                 sample = pd.read_csv(filepath, nrows=1)

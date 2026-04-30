@@ -7,6 +7,7 @@ Feature: insulin-response-modeling
 from hypothesis import given, strategies as st, settings, HealthCheck
 import pandas as pd
 import pytest
+import shutil
 import tempfile
 import os
 
@@ -125,7 +126,6 @@ def test_track_b_field_extraction(track_b_data_tuple, tmp_path):
     cgmacros_dir = os.path.join(tmp_path, 'cgmacros')
     # Clean up any leftover files from previous Hypothesis iterations
     # since tmp_path is reused across @given examples
-    import shutil
     shutil.rmtree(cgmacros_dir, ignore_errors=True)
     os.makedirs(cgmacros_dir, exist_ok=True)
 

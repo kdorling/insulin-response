@@ -829,29 +829,24 @@ class TestUCILoadNoTypeError:
     """PR Comment (Gemini): UCIDiabetesLoader.load() should NOT catch TypeError —
     it's overly broad and can mask programming errors."""
 
-    def test_load_exception_handler_does_not_catch_typeerror(self):
-        """Verify that TypeError is not in the load() exception handler by inspecting source."""
-        import inspect
-        source = inspect.getsource(UCIDiabetesLoader.load)
-        # The final except clause should not include TypeError
-        # Find the last except block in the source
-        lines = source.split('\n')
-        in_final_except = False
-        final_except_lines = []
-        for line in reversed(lines):
-            stripped = line.strip()
-            if stripped.startswith('except') and 'ValueError' not in stripped and 'EmptyDataError' not in stripped:
-                final_except_lines.append(stripped)
-                in_final_except = True
-                break
-            if in_final_except or stripped.startswith('except'):
-                final_except_lines.append(stripped)
+    def test_load_propagates_typeerror(self, monkeypatch):
+        """Verify that TypeError raised during CSV loading is not caught by load()."""
+        def mock_read_csv(*args, **kwargs):
+            raise TypeError("programming error")
 
-        # Check that TypeError is not caught in the final except clause
-        final_except_text = ' '.join(final_except_lines)
-        assert 'TypeError' not in final_except_text, (
-            "load() should not catch TypeError — it's overly broad and masks programming errors"
-        )
+        monkeypatch.setattr(pd, "read_csv", mock_read_csv)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = os.path.join(temp_dir, "uci_diabetes.csv")
+            with open(csv_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "pre_meal_glucose,post_meal_glucose,insulin_dose,meal_timestamp\n"
+                    "100.0,140.0,10.0,2024-01-01\n"
+                )
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            with pytest.raises(TypeError, match="programming error"):
+                loader.load()
 
 
 class TestCGMacrosValidateUnicodeDecodeError:
@@ -888,27 +883,34 @@ class TestCGMacrosValidateUnicodeDecodeError:
 class TestCGMacrosParseParticipantNoTypeError:
     """PR Comment (Gemini): _parse_participant() should NOT catch TypeError."""
 
-    def test_parse_participant_exception_handler_no_typeerror(self):
-        """Verify that TypeError is not in _parse_participant() exception handler."""
-        import inspect
-        source = inspect.getsource(CGMacrosLoader._parse_participant)
-        # Find the except block
-        lines = source.split('\n')
-        except_block = []
-        in_except = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith('except'):
-                in_except = True
-            if in_except:
-                except_block.append(stripped)
-                if stripped.endswith(':') or ') as e:' in stripped:
-                    break
+    def test_parse_participant_typeerror_is_not_swallowed(self, monkeypatch):
+        """TypeError raised by _parse_participant() should propagate out of load()."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
 
-        except_text = ' '.join(except_block)
-        assert 'TypeError' not in except_text, (
-            "_parse_participant() should not catch TypeError — it masks programming errors"
-        )
+            valid_data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+
+            original_parse = CGMacrosLoader._parse_participant
+
+            def raise_typeerror(self_inner, participant_id):
+                raise TypeError("programming error should not be swallowed")
+
+            monkeypatch.setattr(CGMacrosLoader, "_parse_participant", raise_typeerror)
+
+            with pytest.raises(TypeError, match="should not be swallowed"):
+                loader.load()
 
 
 class TestPyprojectDependencies:
