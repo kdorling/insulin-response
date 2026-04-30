@@ -1,4 +1,3 @@
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(__file__))
+# pytest configuration
+# Project root is discoverable via editable install (pip install -e .)
+# See pyproject.toml for package configuration.

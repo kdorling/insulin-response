@@ -23,6 +23,7 @@ MIN_GLUCOSE = 20  # mg/dL
 MAX_GLUCOSE = 600  # mg/dL
 DROPOUT_PARTICIPANTS = [24, 25, 37, 40]
 MAX_PARTICIPANT_ID = 45  # Inclusive upper bound for CGMacros participant IDs
+PARTICIPANT_FILE_REGEX = r"participant_(\d+)\.csv$"
 
 
 class DatasetLoader(ABC):
@@ -300,9 +301,16 @@ class CGMacrosLoader(DatasetLoader):
             raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
 
         # Use the same regex-based discovery as load() for consistency
+        try:
+            dataset_entries = os.listdir(self.dataset_dir)
+        except OSError as e:
+            raise ValueError(
+                f"Cannot read dataset directory: {self.dataset_dir}"
+            ) from e
+
         participant_files = [
-            f for f in os.listdir(self.dataset_dir)
-            if re.match(r"participant_\d+\.csv$", f)
+            f for f in dataset_entries
+            if re.fullmatch(PARTICIPANT_FILE_REGEX, f)
         ]
         if len(participant_files) == 0:
             raise ValueError(
@@ -312,7 +320,7 @@ class CGMacrosLoader(DatasetLoader):
         # Filter out dropout participants, consistent with load()
         non_dropout_files = []
         for filename in participant_files:
-            match = re.match(r"participant_(\d+)\.csv$", filename)
+            match = re.fullmatch(PARTICIPANT_FILE_REGEX, filename)
             if match:
                 pid = int(match.group(1))
                 if pid not in DROPOUT_PARTICIPANTS:
@@ -399,7 +407,14 @@ class CGMacrosLoader(DatasetLoader):
             )
 
             return df
-        except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError) as e:
+        except (
+            pd.errors.ParserError,
+            pd.errors.EmptyDataError,
+            ValueError,
+            UnicodeDecodeError,
+            OSError,
+            TypeError,
+        ) as e:
             logger.error(f"Error parsing participant {participant_id}: {e}")
             return None
 
@@ -425,7 +440,7 @@ class CGMacrosLoader(DatasetLoader):
         try:
             discovered_ids = []
             for filename in os.listdir(self.dataset_dir):
-                match = re.search(r'^participant_(\d+)\.csv$', filename)
+                match = re.fullmatch(PARTICIPANT_FILE_REGEX, filename)
                 if match:
                     discovered_ids.append(int(match.group(1)))
         except OSError as e:
@@ -453,10 +468,6 @@ class CGMacrosLoader(DatasetLoader):
             raise ValueError("No valid participant data found in dataset")
 
         combined_df = pd.concat(all_data, ignore_index=True)
-
-        missing_columns = [col for col in self.required_columns if col not in combined_df.columns]
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {missing_columns}")
 
         logger.info(f"Loaded {len(combined_df)} records from {len(all_data)} participants")
         return combined_df[self.required_columns]

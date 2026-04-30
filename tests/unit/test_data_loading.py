@@ -682,3 +682,127 @@ class TestFutureAnnotationsCompatibility:
         assert 'from __future__ import annotations' in content, (
             "Module should use 'from __future__ import annotations' for Python 3.8+ compatibility"
         )
+
+
+class TestCGMacrosValidateHandlesOSError:
+    """PR Comment (Copilot): validate() should handle OSError/PermissionError on os.listdir."""
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions required")
+    def test_validate_unreadable_directory_raises_valueerror(self):
+        """validate() should raise ValueError (not OSError) when directory exists but is unreadable."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+
+            # Remove read permission to trigger OSError on listdir
+            os.chmod(cgmacros_dir, 0o000)
+            try:
+                with pytest.raises(ValueError, match="Cannot read dataset directory"):
+                    loader.validate()
+            finally:
+                os.chmod(cgmacros_dir, 0o700)
+
+
+class TestCGMacrosParseParticipantBroadExceptions:
+    """PR Comment (Copilot): _parse_participant() should catch UnicodeDecodeError, OSError, TypeError."""
+
+    def test_parse_participant_unicode_error_returns_none(self):
+        """A participant file with invalid encoding should return None, not crash load()."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write a valid participant file
+            valid_data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=1, freq='5min'),
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            # Write a binary garbage file that triggers UnicodeDecodeError
+            with open(os.path.join(cgmacros_dir, "participant_2.csv"), "wb") as f:
+                f.write(b"\x80\x81\x82\x83\x84\x85" * 100)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            # load() should succeed by skipping the bad file, not crash
+            result = loader.load()
+            assert len(result) == 1
+            assert all(result['participant_id'] == 1)
+
+    def test_parse_participant_catches_oserror(self):
+        """_parse_participant should catch OSError for unreadable files, not crash load()."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write a valid participant file
+            valid_data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=1, freq='5min'),
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_3.csv"), index=False)
+
+            if os.name == "posix":
+                # Make participant_3 unreadable
+                os.chmod(os.path.join(cgmacros_dir, "participant_3.csv"), 0o000)
+                try:
+                    loader = CGMacrosLoader(data_dir=temp_dir)
+                    result = loader.load()
+                    # Should skip the unreadable file and load only participant_1
+                    assert len(result) == 1
+                    assert all(result['participant_id'] == 1)
+                finally:
+                    os.chmod(os.path.join(cgmacros_dir, "participant_3.csv"), 0o644)
+            else:
+                pytest.skip("POSIX permissions required for this test")
+
+
+class TestParticipantFileRegexConstant:
+    """PR Comment (Gemini): Regex pattern should be a module-level constant."""
+
+    def test_participant_file_regex_constant_exists(self):
+        """Module should define PARTICIPANT_FILE_REGEX as a constant."""
+        from src import data_preprocessing
+        assert hasattr(data_preprocessing, 'PARTICIPANT_FILE_REGEX'), (
+            "Module should define PARTICIPANT_FILE_REGEX constant"
+        )
+
+    def test_participant_file_regex_matches_valid_filenames(self):
+        """The regex constant should match valid participant filenames."""
+        import re
+        from src.data_preprocessing import PARTICIPANT_FILE_REGEX
+        assert re.fullmatch(PARTICIPANT_FILE_REGEX, "participant_1.csv")
+        assert re.fullmatch(PARTICIPANT_FILE_REGEX, "participant_42.csv")
+        assert not re.fullmatch(PARTICIPANT_FILE_REGEX, "participant_backup.csv")
+        assert not re.fullmatch(PARTICIPANT_FILE_REGEX, "metadata.csv")
+
+
+class TestConftestNoSysPathManipulation:
+    """PR Comment (Gemini): conftest.py should not manipulate sys.path."""
+
+    def test_conftest_does_not_manipulate_sys_path(self):
+        """conftest.py should not contain sys.path.insert or sys.path manipulation."""
+        # Walk up from this test file to find the project root conftest.py
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        conftest_path = os.path.join(project_root, "conftest.py")
+        if not os.path.exists(conftest_path):
+            # conftest.py was removed entirely, which also satisfies the requirement
+            return
+        with open(conftest_path, 'r') as f:
+            content = f.read()
+        assert 'sys.path' not in content, (
+            "conftest.py should not manipulate sys.path; use pip install -e . instead"
+        )
