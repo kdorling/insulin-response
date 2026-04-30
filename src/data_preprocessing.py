@@ -65,7 +65,8 @@ class DatasetLoader(ABC):
         for col in glucose_columns:
             if col not in df.columns:
                 continue
-            out_of_range = (df[col] < MIN_GLUCOSE) | (df[col] > MAX_GLUCOSE)
+            vals = pd.to_numeric(df[col], errors='coerce')
+            out_of_range = (vals < MIN_GLUCOSE) | (vals > MAX_GLUCOSE)
             n_out = out_of_range.sum()
             if n_out > 0:
                 ctx = f"{context}: " if context else ""
@@ -229,7 +230,7 @@ class UCIDiabetesLoader(DatasetLoader):
             raise ValueError(f"Dataset file is empty or corrupted: {self.dataset_path}") from e
         except UnicodeDecodeError as e:
             raise ValueError(f"Error loading dataset {self.dataset_path}: {e}") from e
-        except (OSError, pd.errors.ParserError) as e:
+        except (OSError, pd.errors.ParserError, ValueError) as e:
             raise ValueError(f"Error loading dataset {self.dataset_path}: {e}") from e
 
 

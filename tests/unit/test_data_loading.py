@@ -1046,6 +1046,90 @@ class TestCGMacrosLoadEmptyCombinedDataFrame:
                 loader.load()
 
 
+class TestGlucoseValidationNonNumericData:
+    """PR Comment (Gemini): _validate_glucose_range should handle non-numeric glucose columns
+    using pd.to_numeric with errors='coerce' to avoid TypeError on corrupted data."""
+
+    def test_track_a_non_numeric_glucose_does_not_raise(self, caplog):
+        """load() should not crash when glucose columns contain non-numeric strings."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = os.path.join(temp_dir, "uci_diabetes.csv")
+            # Write a CSV where glucose columns have non-numeric values
+            with open(csv_path, "w") as f:
+                f.write("pre_meal_glucose,post_meal_glucose,insulin_dose,meal_timestamp\n")
+                f.write("not_a_number,also_bad,10.0,2024-01-01T12:00:00\n")
+                f.write("100.0,140.0,10.0,2024-01-01T13:00:00\n")
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            # Should not raise TypeError from the glucose range comparison
+            result = loader.load()
+            assert len(result) == 2
+
+    def test_validate_glucose_range_coerces_non_numeric(self, caplog):
+        """_validate_glucose_range should coerce non-numeric values to NaN
+        rather than raising TypeError."""
+        import logging
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            df = pd.DataFrame({
+                'glucose': ['bad', '100.0', 'NaN', '700.0'],
+            })
+            # Should not raise — non-numeric values are coerced to NaN
+            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+                loader._validate_glucose_range(df, ['glucose'])
+
+            # Should still detect the out-of-range value (700.0 > MAX_GLUCOSE)
+            warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+            assert any("out of range" in msg.lower() for msg in warning_messages), (
+                "Should warn about 700.0 being out of range even when other values are non-numeric"
+            )
+
+
+class TestUCILoadInvalidTimestampWrapsValueError:
+    """PR Comment (Gemini): UCIDiabetesLoader.load() should catch ValueError from
+    pd.to_datetime and wrap it with the dataset path for consistent error reporting."""
+
+    def test_load_invalid_timestamp_raises_valueerror_with_path(self):
+        """Invalid timestamps should produce ValueError mentioning the dataset path."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = os.path.join(temp_dir, "uci_diabetes.csv")
+            data = pd.DataFrame({
+                'pre_meal_glucose': [100.0],
+                'post_meal_glucose': [140.0],
+                'insulin_dose': [10.0],
+                'meal_timestamp': ['not-a-valid-timestamp'],
+            })
+            data.to_csv(csv_path, index=False)
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError) as exc_info:
+                loader.load()
+            # The error message should include the dataset path for debugging
+            assert "uci_diabetes" in str(exc_info.value) or temp_dir in str(exc_info.value), (
+                "ValueError from invalid timestamps should include the dataset path"
+            )
+
+    def test_load_mixed_valid_invalid_timestamps_raises_valueerror_with_path(self):
+        """A mix of valid and invalid timestamps should still produce a path-aware ValueError."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = os.path.join(temp_dir, "uci_diabetes.csv")
+            data = pd.DataFrame({
+                'pre_meal_glucose': [100.0, 110.0],
+                'post_meal_glucose': [140.0, 150.0],
+                'insulin_dose': [10.0, 12.0],
+                'meal_timestamp': ['2024-01-01T12:00:00', 'garbage-timestamp'],
+            })
+            data.to_csv(csv_path, index=False)
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError) as exc_info:
+                loader.load()
+            assert "uci_diabetes" in str(exc_info.value) or temp_dir in str(exc_info.value), (
+                "ValueError from invalid timestamps should include the dataset path"
+            )
+
+
 class TestCGMacrosDiscoverParticipantIds:
     """PR Comment (Gemini): Participant ID discovery should be a shared helper method."""
 
