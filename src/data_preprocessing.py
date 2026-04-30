@@ -229,8 +229,6 @@ class UCIDiabetesLoader(DatasetLoader):
             raise ValueError(f"Dataset file is empty or corrupted: {self.dataset_path}") from e
         except UnicodeDecodeError as e:
             raise ValueError(f"Error loading dataset {self.dataset_path}: {e}") from e
-        except ValueError:
-            raise
         except (OSError, pd.errors.ParserError) as e:
             raise ValueError(f"Error loading dataset {self.dataset_path}: {e}") from e
 

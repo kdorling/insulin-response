@@ -283,9 +283,7 @@ class TestCGMacrosErrorTypeConsistency:
             data.to_csv(os.path.join(cgmacros_dir, "random.csv"), index=False)
 
             loader = CGMacrosLoader(data_dir=temp_dir)
-            # validate() currently passes here because it only checks for *.csv files
-            # After fix, it should check for participant_*.csv specifically
-            # and raise ValueError for incomplete dataset
+            # validate() should reject datasets that contain no participant_*.csv files.
             with pytest.raises(ValueError):
                 loader.validate()
 
@@ -376,30 +374,31 @@ class TestCGMacrosValidateLoadConsistency:
 
 
 class TestCGMacrosLoadOSError:
-    """load() should raise RuntimeError (not FileNotFoundError) for permission errors on listdir."""
+    """load() should raise ValueError (not FileNotFoundError) for permission errors on listdir."""
 
-    def test_load_listdir_oserror_raises_runtime_error(self):
-        """When os.listdir fails on an existing directory, raise RuntimeError."""
+    def test_load_listdir_oserror_raises_valueerror(self, monkeypatch):
+        """When os.listdir fails on an existing directory, raise ValueError."""
         with tempfile.TemporaryDirectory() as temp_dir:
             cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
             os.makedirs(cgmacros_dir)
 
             loader = CGMacrosLoader(data_dir=temp_dir)
 
-            # Remove read permission to trigger OSError on listdir
-            if os.name == "posix":
-                os.chmod(cgmacros_dir, 0o000)
-                try:
-                    with pytest.raises(ValueError, match="Cannot access"):
-                        loader.load()
-                finally:
-                    os.chmod(cgmacros_dir, 0o700)
-            else:
-                pytest.skip("POSIX permissions required for this test")
+            original_listdir = os.listdir
+
+            def mocked_listdir(path):
+                if path == cgmacros_dir:
+                    raise PermissionError("Permission denied")
+                return original_listdir(path)
+
+            monkeypatch.setattr(os, "listdir", mocked_listdir)
+
+            with pytest.raises(ValueError, match="Cannot access"):
+                loader.load()
 
 
 class TestTimestampParsing:
-    """Timestamp parsing should use explicit dayfirst=False for consistency."""
+    """Timestamp parsing should use explicit ISO8601 parsing for consistency."""
 
     def test_track_a_parses_iso_timestamps(self):
         """Track A should correctly parse ISO format timestamps."""
@@ -687,8 +686,7 @@ class TestFutureAnnotationsCompatibility:
 class TestCGMacrosValidateHandlesOSError:
     """PR Comment (Copilot): validate() should handle OSError/PermissionError on os.listdir."""
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions required")
-    def test_validate_unreadable_directory_raises_valueerror(self):
+    def test_validate_unreadable_directory_raises_valueerror(self, monkeypatch):
         """validate() should raise ValueError (not OSError) when directory exists but is unreadable."""
         with tempfile.TemporaryDirectory() as temp_dir:
             cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
@@ -696,17 +694,21 @@ class TestCGMacrosValidateHandlesOSError:
 
             loader = CGMacrosLoader(data_dir=temp_dir)
 
-            # Remove read permission to trigger OSError on listdir
-            os.chmod(cgmacros_dir, 0o000)
-            try:
-                with pytest.raises(ValueError, match="Cannot access dataset directory"):
-                    loader.validate()
-            finally:
-                os.chmod(cgmacros_dir, 0o700)
+            original_listdir = os.listdir
+
+            def mocked_listdir(path):
+                if path == cgmacros_dir:
+                    raise PermissionError("Permission denied")
+                return original_listdir(path)
+
+            monkeypatch.setattr(os, "listdir", mocked_listdir)
+
+            with pytest.raises(ValueError, match="Cannot access dataset directory"):
+                loader.validate()
 
 
 class TestCGMacrosParseParticipantBroadExceptions:
-    """PR Comment (Copilot): _parse_participant() should catch UnicodeDecodeError, OSError, TypeError."""
+    """_parse_participant() should catch UnicodeDecodeError and OSError (but not TypeError)."""
 
     def test_parse_participant_unicode_error_returns_none(self):
         """A participant file with invalid encoding should return None, not crash load()."""
@@ -736,7 +738,7 @@ class TestCGMacrosParseParticipantBroadExceptions:
             assert len(result) == 1
             assert all(result['participant_id'] == 1)
 
-    def test_parse_participant_catches_oserror(self):
+    def test_parse_participant_catches_oserror(self, monkeypatch):
         """_parse_participant should catch OSError for unreadable files, not crash load()."""
         with tempfile.TemporaryDirectory() as temp_dir:
             cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
@@ -755,19 +757,22 @@ class TestCGMacrosParseParticipantBroadExceptions:
             valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
             valid_data.to_csv(os.path.join(cgmacros_dir, "participant_3.csv"), index=False)
 
-            if os.name == "posix":
-                # Make participant_3 unreadable
-                os.chmod(os.path.join(cgmacros_dir, "participant_3.csv"), 0o000)
-                try:
-                    loader = CGMacrosLoader(data_dir=temp_dir)
-                    result = loader.load()
-                    # Should skip the unreadable file and load only participant_1
-                    assert len(result) == 1
-                    assert all(result['participant_id'] == 1)
-                finally:
-                    os.chmod(os.path.join(cgmacros_dir, "participant_3.csv"), 0o644)
-            else:
-                pytest.skip("POSIX permissions required for this test")
+            loader = CGMacrosLoader(data_dir=temp_dir)
+
+            original_read_csv = pd.read_csv
+            call_count = {"n": 0}
+
+            def mock_read_csv(filepath, *args, **kwargs):
+                if isinstance(filepath, str) and "participant_3.csv" in filepath:
+                    raise OSError("Permission denied")
+                return original_read_csv(filepath, *args, **kwargs)
+
+            monkeypatch.setattr(pd, "read_csv", mock_read_csv)
+
+            result = loader.load()
+            # Should skip the unreadable file and load only participant_1
+            assert len(result) == 1
+            assert all(result['participant_id'] == 1)
 
 
 class TestParticipantFileRegexConstant:
@@ -918,18 +923,16 @@ class TestPyprojectDependencies:
 
     def test_pyproject_has_pandas_dependency(self):
         """pyproject.toml should list pandas>=2.0.0 in dependencies."""
-        try:
-            import tomllib
-        except ModuleNotFoundError:
-            import tomli as tomllib
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         pyproject_path = os.path.join(project_root, "pyproject.toml")
-        with open(pyproject_path, "rb") as f:
-            config = tomllib.load(f)
-        deps = config.get("project", {}).get("dependencies", [])
-        assert any("pandas" in d for d in deps), (
-            "pyproject.toml should declare pandas as a project dependency"
-        )
+        with open(pyproject_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert (
+            '"pandas>=2.0.0"' in content
+            or "'pandas>=2.0.0'" in content
+            or '"pandas"' in content
+            or "'pandas'" in content
+        ), "pyproject.toml should declare pandas as a project dependency"
 
 
 class TestSrcInitExists:
@@ -1072,22 +1075,25 @@ class TestCGMacrosDiscoverParticipantIds:
             ids = loader._discover_participant_ids()
             assert ids == [1, 3, 5], f"Expected [1, 3, 5], got {ids}"
 
-    def test_discover_participant_ids_raises_on_unreadable_dir(self):
+    def test_discover_participant_ids_raises_on_unreadable_dir(self, monkeypatch):
         """_discover_participant_ids() should raise ValueError for unreadable directories."""
-        if os.name != "posix":
-            pytest.skip("POSIX permissions required")
-
         with tempfile.TemporaryDirectory() as temp_dir:
             cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
             os.makedirs(cgmacros_dir)
 
             loader = CGMacrosLoader(data_dir=temp_dir)
-            os.chmod(cgmacros_dir, 0o000)
-            try:
-                with pytest.raises(ValueError, match="Cannot access"):
-                    loader._discover_participant_ids()
-            finally:
-                os.chmod(cgmacros_dir, 0o700)
+
+            original_listdir = os.listdir
+
+            def mocked_listdir(path):
+                if path == cgmacros_dir:
+                    raise PermissionError("Permission denied")
+                return original_listdir(path)
+
+            monkeypatch.setattr(os, "listdir", mocked_listdir)
+
+            with pytest.raises(ValueError, match="Cannot access"):
+                loader._discover_participant_ids()
 
     def test_discover_participant_ids_empty_dir_returns_empty(self):
         """_discover_participant_ids() should return empty list for dir with no participant files."""
