@@ -6,6 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "insulin-response"
 version = "0.1.0"
 requires-python = ">=3.8"
+dependencies = [
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "hypothesis"]
 
 [tool.setuptools.packages.find]
 include = ["src*"]

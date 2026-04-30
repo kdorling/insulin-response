@@ -790,6 +790,155 @@ class TestParticipantFileRegexConstant:
         assert not re.fullmatch(PARTICIPANT_FILE_REGEX, "metadata.csv")
 
 
+class TestUCILoadUnicodeDecodeError:
+    """PR Comment (Copilot): UCIDiabetesLoader.load() should catch UnicodeDecodeError
+    and wrap it as ValueError with the dataset path in the message."""
+
+    def test_load_unicode_error_raises_valueerror(self):
+        """A file with invalid encoding should raise ValueError, not UnicodeDecodeError."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = os.path.join(temp_dir, "uci_diabetes.csv")
+            # Write bytes that are valid enough to not trigger ParserError first,
+            # but will cause UnicodeDecodeError during read_csv
+            with open(csv_path, "wb") as f:
+                f.write(b"pre_meal_glucose,post_meal_glucose,insulin_dose,meal_timestamp\n")
+                f.write(b"100.0,140.0,10.0,2024-01-01\xff\xfe\n")
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError) as exc_info:
+                loader.load()
+            # Error message should include the dataset path for debugging
+            assert temp_dir in str(exc_info.value) or "uci_diabetes" in str(exc_info.value), (
+                "Error message should include the dataset path for easier debugging"
+            )
+
+    def test_load_binary_file_raises_valueerror_with_path(self):
+        """Binary garbage in load() should produce ValueError mentioning the dataset path."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = os.path.join(temp_dir, "uci_diabetes.csv")
+            with open(csv_path, "wb") as f:
+                f.write(b"\x80\x81\x82\x83\x84\x85" * 100)
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError) as exc_info:
+                loader.load()
+            assert "uci_diabetes" in str(exc_info.value) or temp_dir in str(exc_info.value)
+
+
+class TestUCILoadNoTypeError:
+    """PR Comment (Gemini): UCIDiabetesLoader.load() should NOT catch TypeError —
+    it's overly broad and can mask programming errors."""
+
+    def test_load_exception_handler_does_not_catch_typeerror(self):
+        """Verify that TypeError is not in the load() exception handler by inspecting source."""
+        import inspect
+        source = inspect.getsource(UCIDiabetesLoader.load)
+        # The final except clause should not include TypeError
+        # Find the last except block in the source
+        lines = source.split('\n')
+        in_final_except = False
+        final_except_lines = []
+        for line in reversed(lines):
+            stripped = line.strip()
+            if stripped.startswith('except') and 'ValueError' not in stripped and 'EmptyDataError' not in stripped:
+                final_except_lines.append(stripped)
+                in_final_except = True
+                break
+            if in_final_except or stripped.startswith('except'):
+                final_except_lines.append(stripped)
+
+        # Check that TypeError is not caught in the final except clause
+        final_except_text = ' '.join(final_except_lines)
+        assert 'TypeError' not in final_except_text, (
+            "load() should not catch TypeError — it's overly broad and masks programming errors"
+        )
+
+
+class TestCGMacrosValidateUnicodeDecodeError:
+    """PR Comment (Copilot): CGMacrosLoader.validate() should catch UnicodeDecodeError
+    when parsing participant files, so a bad-encoding file is skipped rather than crashing."""
+
+    def test_validate_skips_unicode_error_participant_file(self):
+        """validate() should skip participant files with invalid encoding, not crash."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write a valid participant file
+            valid_data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            # Write a binary garbage file that triggers UnicodeDecodeError
+            with open(os.path.join(cgmacros_dir, "participant_2.csv"), "wb") as f:
+                f.write(b"\x80\x81\x82\x83\x84\x85" * 100)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            # validate() should succeed — the bad file is skipped, the valid one counts
+            assert loader.validate() is True
+
+
+class TestCGMacrosParseParticipantNoTypeError:
+    """PR Comment (Gemini): _parse_participant() should NOT catch TypeError."""
+
+    def test_parse_participant_exception_handler_no_typeerror(self):
+        """Verify that TypeError is not in _parse_participant() exception handler."""
+        import inspect
+        source = inspect.getsource(CGMacrosLoader._parse_participant)
+        # Find the except block
+        lines = source.split('\n')
+        except_block = []
+        in_except = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('except'):
+                in_except = True
+            if in_except:
+                except_block.append(stripped)
+                if stripped.endswith(':') or ') as e:' in stripped:
+                    break
+
+        except_text = ' '.join(except_block)
+        assert 'TypeError' not in except_text, (
+            "_parse_participant() should not catch TypeError — it masks programming errors"
+        )
+
+
+class TestPyprojectDependencies:
+    """PR Comment (Gemini): pyproject.toml should declare pandas>=2.0.0 as a dependency."""
+
+    def test_pyproject_has_pandas_dependency(self):
+        """pyproject.toml should list pandas>=2.0.0 in dependencies."""
+        import tomllib
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        pyproject_path = os.path.join(project_root, "pyproject.toml")
+        with open(pyproject_path, "rb") as f:
+            config = tomllib.load(f)
+        deps = config.get("project", {}).get("dependencies", [])
+        assert any("pandas" in d for d in deps), (
+            "pyproject.toml should declare pandas as a project dependency"
+        )
+
+
+class TestSrcInitExists:
+    """PR Comment (Copilot): src/ needs __init__.py for setuptools package discovery."""
+
+    def test_src_init_py_exists(self):
+        """src/__init__.py should exist for proper package discovery."""
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        init_path = os.path.join(project_root, "src", "__init__.py")
+        assert os.path.exists(init_path), (
+            "src/__init__.py must exist for setuptools to discover the package"
+        )
+
+
 class TestConftestNoSysPathManipulation:
     """PR Comment (Gemini): conftest.py should not manipulate sys.path."""
 

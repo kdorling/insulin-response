@@ -4,7 +4,7 @@ Property-based tests for data loading and processing.
 Feature: insulin-response-modeling
 """
 
-from hypothesis import given, strategies as st
+from hypothesis import given, strategies as st, settings, HealthCheck
 import pandas as pd
 import pytest
 import tempfile
@@ -42,8 +42,9 @@ def track_a_dataframe_generator(draw):
 
 
 # Feature: insulin-response-modeling, Property 1: Complete Field Extraction
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(track_a_data=track_a_dataframe_generator())
-def test_track_a_field_extraction(track_a_data):
+def test_track_a_field_extraction(track_a_data, tmp_path):
     """
     Property 1: Complete Field Extraction
     Validates: Requirements 1.2
@@ -51,20 +52,19 @@ def test_track_a_field_extraction(track_a_data):
     For any Track A dataset, when the Data Pipeline processes it,
     all required fields must be present in the output DataFrame.
     """
-    with tempfile.TemporaryDirectory() as temp_dir:
-        track_a_data.to_csv(os.path.join(temp_dir, "uci_diabetes.csv"), index=False)
+    track_a_data.to_csv(os.path.join(tmp_path, "uci_diabetes.csv"), index=False)
 
-        loader = UCIDiabetesLoader(data_dir=temp_dir)
-        result = loader.load()
+    loader = UCIDiabetesLoader(data_dir=str(tmp_path))
+    result = loader.load()
 
-        required_fields = ['pre_meal_glucose', 'post_meal_glucose',
-                          'insulin_dose', 'meal_timestamp']
+    required_fields = ['pre_meal_glucose', 'post_meal_glucose',
+                      'insulin_dose', 'meal_timestamp']
 
-        assert all(field in result.columns for field in required_fields), \
-            f"Missing required fields. Expected: {required_fields}, Got: {list(result.columns)}"
+    assert all(field in result.columns for field in required_fields), \
+        f"Missing required fields. Expected: {required_fields}, Got: {list(result.columns)}"
 
-        assert len(result) == len(track_a_data), \
-            f"Row count mismatch. Expected: {len(track_a_data)}, Got: {len(result)}"
+    assert len(result) == len(track_a_data), \
+        f"Row count mismatch. Expected: {len(track_a_data)}, Got: {len(result)}"
 
 
 @st.composite
@@ -110,8 +110,9 @@ def track_b_dataframe_generator(draw):
 
 
 # Feature: insulin-response-modeling, Property 1: Complete Field Extraction
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(track_b_data_tuple=track_b_dataframe_generator())
-def test_track_b_field_extraction(track_b_data_tuple):
+def test_track_b_field_extraction(track_b_data_tuple, tmp_path):
     """
     Property 1: Complete Field Extraction
     Validates: Requirements 1.4
@@ -121,27 +122,31 @@ def test_track_b_field_extraction(track_b_data_tuple):
     """
     track_b_data, participant_id = track_b_data_tuple
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
-        os.makedirs(cgmacros_dir)
+    cgmacros_dir = os.path.join(tmp_path, 'cgmacros')
+    # Clean up any leftover files from previous Hypothesis iterations
+    # since tmp_path is reused across @given examples
+    if os.path.exists(cgmacros_dir):
+        for f in os.listdir(cgmacros_dir):
+            os.remove(os.path.join(cgmacros_dir, f))
+    os.makedirs(cgmacros_dir, exist_ok=True)
 
-        participant_file = os.path.join(cgmacros_dir, f'participant_{participant_id}.csv')
-        track_b_data.to_csv(participant_file, index=False)
+    participant_file = os.path.join(cgmacros_dir, f'participant_{participant_id}.csv')
+    track_b_data.to_csv(participant_file, index=False)
 
-        loader = CGMacrosLoader(data_dir=temp_dir)
-        result = loader.load()
+    loader = CGMacrosLoader(data_dir=str(tmp_path))
+    result = loader.load()
 
-        required_fields = ['participant_id', 'timestamp', 'glucose', 'carbs',
-                          'fat', 'protein', 'activity', 'heart_rate', 'health_group']
+    required_fields = ['participant_id', 'timestamp', 'glucose', 'carbs',
+                      'fat', 'protein', 'activity', 'heart_rate', 'health_group']
 
-        assert all(field in result.columns for field in required_fields), \
-            f"Missing required fields. Expected: {required_fields}, Got: {list(result.columns)}"
+    assert all(field in result.columns for field in required_fields), \
+        f"Missing required fields. Expected: {required_fields}, Got: {list(result.columns)}"
 
-        assert len(result) == len(track_b_data), \
-            f"Row count mismatch. Expected: {len(track_b_data)}, Got: {len(result)}"
+    assert len(result) == len(track_b_data), \
+        f"Row count mismatch. Expected: {len(track_b_data)}, Got: {len(result)}"
 
-        assert all(result['participant_id'] == participant_id), \
-            f"Participant ID mismatch"
+    assert all(result['participant_id'] == participant_id), \
+        f"Participant ID mismatch"
 
 
 def test_track_a_load_raises_on_missing_file():

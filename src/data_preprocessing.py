@@ -223,10 +223,12 @@ class UCIDiabetesLoader(DatasetLoader):
 
         except pd.errors.EmptyDataError as e:
             raise ValueError(f"Dataset file is empty or corrupted: {self.dataset_path}") from e
+        except UnicodeDecodeError as e:
+            raise ValueError(f"Error loading dataset {self.dataset_path}: {e}") from e
         except ValueError:
             raise
-        except (OSError, TypeError, pd.errors.ParserError) as e:
-            raise ValueError(f"Error loading dataset: {e}") from e
+        except (OSError, pd.errors.ParserError) as e:
+            raise ValueError(f"Error loading dataset {self.dataset_path}: {e}") from e
 
 
 class CGMacrosLoader(DatasetLoader):
@@ -340,7 +342,7 @@ class CGMacrosLoader(DatasetLoader):
                 missing = [c for c in self._expected_file_columns if c not in sample.columns]
                 if not missing and not sample.empty:
                     valid_count += 1
-            except (pd.errors.ParserError, pd.errors.EmptyDataError, OSError):
+            except (pd.errors.ParserError, pd.errors.EmptyDataError, OSError, UnicodeDecodeError):
                 continue
 
         if valid_count == 0:
@@ -413,7 +415,6 @@ class CGMacrosLoader(DatasetLoader):
             ValueError,
             UnicodeDecodeError,
             OSError,
-            TypeError,
         ) as e:
             logger.error(f"Error parsing participant {participant_id}: {e}")
             return None
