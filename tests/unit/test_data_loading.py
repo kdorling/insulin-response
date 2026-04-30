@@ -390,7 +390,7 @@ class TestCGMacrosLoadOSError:
             if os.name == "posix":
                 os.chmod(cgmacros_dir, 0o000)
                 try:
-                    with pytest.raises(RuntimeError, match="Error accessing"):
+                    with pytest.raises(ValueError, match="Cannot access"):
                         loader.load()
                 finally:
                     os.chmod(cgmacros_dir, 0o700)
@@ -699,7 +699,7 @@ class TestCGMacrosValidateHandlesOSError:
             # Remove read permission to trigger OSError on listdir
             os.chmod(cgmacros_dir, 0o000)
             try:
-                with pytest.raises(ValueError, match="Cannot read dataset directory"):
+                with pytest.raises(ValueError, match="Cannot access dataset directory"):
                     loader.validate()
             finally:
                 os.chmod(cgmacros_dir, 0o700)
@@ -960,6 +960,149 @@ class TestConftestNoSysPathManipulation:
         assert 'sys.path' not in content, (
             "conftest.py should not manipulate sys.path; use pip install -e . instead"
         )
+
+
+class TestParseParticipantEmptyDataFrame:
+    """PR Comment (Copilot): _parse_participant() should treat header-only files as invalid."""
+
+    def test_parse_participant_headers_only_returns_none(self):
+        """A participant CSV with headers but no data rows should be treated as invalid."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write a header-only participant file (no data rows)
+            with open(os.path.join(cgmacros_dir, "participant_1.csv"), "w") as f:
+                f.write("timestamp,glucose,carbs,fat,protein,activity,heart_rate\n")
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            result = loader._parse_participant(1)
+            assert result is None, (
+                "_parse_participant should return None for header-only CSV files"
+            )
+
+    def test_load_skips_header_only_participant_files(self):
+        """load() should skip header-only participant files and still load valid ones."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write a header-only participant file
+            with open(os.path.join(cgmacros_dir, "participant_1.csv"), "w") as f:
+                f.write("timestamp,glucose,carbs,fat,protein,activity,heart_rate\n")
+
+            # Write a valid participant file
+            valid_data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=2, freq='5min'),
+                'glucose': [100.0, 110.0],
+                'carbs': [30.0, 40.0],
+                'fat': [10.0, 15.0],
+                'protein': [20.0, 25.0],
+                'activity': [1.0, 2.0],
+                'heart_rate': [70.0, 80.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_2.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            result = loader.load()
+            assert len(result) == 2
+            assert all(result['participant_id'] == 2)
+
+    def test_load_raises_when_all_participants_are_header_only(self):
+        """load() should raise ValueError when all participant files are header-only."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write only header-only participant files
+            for pid in [1, 2, 3]:
+                with open(os.path.join(cgmacros_dir, f"participant_{pid}.csv"), "w") as f:
+                    f.write("timestamp,glucose,carbs,fat,protein,activity,heart_rate\n")
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError, match="No valid participant data"):
+                loader.load()
+
+
+class TestCGMacrosLoadEmptyCombinedDataFrame:
+    """PR Comment (Copilot): load() should guard against empty concatenated result."""
+
+    def test_load_raises_when_combined_df_is_empty(self):
+        """load() should raise ValueError if concatenated result has zero rows."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write a header-only file — _parse_participant returns None for this
+            # so all_data will be empty and we get "No valid participant data"
+            with open(os.path.join(cgmacros_dir, "participant_1.csv"), "w") as f:
+                f.write("timestamp,glucose,carbs,fat,protein,activity,heart_rate\n")
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError):
+                loader.load()
+
+
+class TestCGMacrosDiscoverParticipantIds:
+    """PR Comment (Gemini): Participant ID discovery should be a shared helper method."""
+
+    def test_discover_participant_ids_returns_sorted_unique_ids(self):
+        """_discover_participant_ids() should return sorted unique participant IDs."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            for pid in [5, 1, 3, 1]:  # duplicates and unsorted
+                pd.DataFrame({
+                    'timestamp': ['2024-01-01 12:00:00'],
+                    'glucose': [100.0],
+                    'carbs': [30.0],
+                    'fat': [10.0],
+                    'protein': [20.0],
+                    'activity': [1.0],
+                    'heart_rate': [70.0],
+                }).to_csv(os.path.join(cgmacros_dir, f"participant_{pid}.csv"), index=False)
+
+            # Also write a non-matching file
+            pd.DataFrame({'col': [1]}).to_csv(
+                os.path.join(cgmacros_dir, "metadata.csv"), index=False
+            )
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            ids = loader._discover_participant_ids()
+            assert ids == [1, 3, 5], f"Expected [1, 3, 5], got {ids}"
+
+    def test_discover_participant_ids_raises_on_unreadable_dir(self):
+        """_discover_participant_ids() should raise ValueError for unreadable directories."""
+        if os.name != "posix":
+            pytest.skip("POSIX permissions required")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            os.chmod(cgmacros_dir, 0o000)
+            try:
+                with pytest.raises(ValueError, match="Cannot access"):
+                    loader._discover_participant_ids()
+            finally:
+                os.chmod(cgmacros_dir, 0o700)
+
+    def test_discover_participant_ids_empty_dir_returns_empty(self):
+        """_discover_participant_ids() should return empty list for dir with no participant files."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Only non-matching files
+            pd.DataFrame({'col': [1]}).to_csv(
+                os.path.join(cgmacros_dir, "metadata.csv"), index=False
+            )
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            ids = loader._discover_participant_ids()
+            assert ids == []
 
 
 class TestValidationLogConsistency:

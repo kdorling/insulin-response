@@ -291,6 +291,31 @@ class CGMacrosLoader(DatasetLoader):
             "Expected structure: data/cgmacros/participant_*.csv files."
         )
 
+    def _discover_participant_ids(self) -> list[int]:
+        """
+        Discover available participant IDs from the dataset directory.
+
+        Scans the dataset directory for files matching the participant filename
+        pattern and returns their numeric IDs, sorted and deduplicated.
+
+        Returns:
+            Sorted list of unique participant IDs found in the directory
+
+        Raises:
+            ValueError: If the dataset directory cannot be read
+        """
+        try:
+            discovered_ids = []
+            for filename in os.listdir(self.dataset_dir):
+                match = re.fullmatch(PARTICIPANT_FILE_REGEX, filename)
+                if match:
+                    discovered_ids.append(int(match.group(1)))
+            return sorted(set(discovered_ids))
+        except OSError as e:
+            raise ValueError(
+                f"Cannot access dataset directory: {self.dataset_dir}"
+            ) from e
+
     def validate(self) -> bool:
         """
         Validate that the dataset directory exists, contains parseable participant
@@ -306,39 +331,29 @@ class CGMacrosLoader(DatasetLoader):
         if not os.path.exists(self.dataset_dir):
             raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
 
-        # Use the same regex-based discovery as load() for consistency
-        try:
-            dataset_entries = os.listdir(self.dataset_dir)
-        except OSError as e:
-            raise ValueError(
-                f"Cannot read dataset directory: {self.dataset_dir}"
-            ) from e
+        # Use shared discovery helper for consistency with load()
+        participant_ids = self._discover_participant_ids()
 
-        participant_files = []
-        for f in dataset_entries:
-            m = re.fullmatch(PARTICIPANT_FILE_REGEX, f)
-            if m:
-                participant_files.append((f, int(m.group(1))))
-        if len(participant_files) == 0:
+        if len(participant_ids) == 0:
             raise ValueError(
                 f"No participant CSV files found in dataset directory: {self.dataset_dir}"
             )
 
         # Filter out dropout participants, consistent with load()
-        non_dropout_files = [
-            (filename, pid) for filename, pid in participant_files
+        non_dropout_ids = [
+            pid for pid in participant_ids
             if pid not in DROPOUT_PARTICIPANTS
         ]
 
-        if len(non_dropout_files) == 0:
+        if len(non_dropout_ids) == 0:
             raise ValueError(
                 f"No non-dropout participant files found in: {self.dataset_dir}"
             )
 
         # Verify at least one file is parseable with required columns
         valid_count = 0
-        for filename, _pid in non_dropout_files:
-            filepath = os.path.join(self.dataset_dir, filename)
+        for pid in non_dropout_ids:
+            filepath = os.path.join(self.dataset_dir, f"participant_{pid}.csv")
             try:
                 sample = pd.read_csv(filepath, nrows=1)
                 missing = [c for c in self._expected_file_columns if c not in sample.columns]
@@ -355,7 +370,7 @@ class CGMacrosLoader(DatasetLoader):
 
         logger.info(
             f"Dataset validation passed: found {valid_count} valid non-dropout "
-            f"participant files out of {len(non_dropout_files)} total"
+            f"participant files out of {len(non_dropout_ids)} total"
         )
         return True
 
@@ -393,6 +408,10 @@ class CGMacrosLoader(DatasetLoader):
 
         try:
             df = pd.read_csv(participant_file)
+
+            if df.empty:
+                logger.warning(f"Participant {participant_id} file has no data rows (headers only)")
+                return None
 
             expected_file_columns = self._expected_file_columns
             missing = [c for c in expected_file_columns if c not in df.columns]
@@ -439,23 +458,13 @@ class CGMacrosLoader(DatasetLoader):
             logger.error(error_msg)
             raise FileNotFoundError(error_msg)
 
-        # Discover available participant files
-        try:
-            discovered_ids = []
-            for filename in os.listdir(self.dataset_dir):
-                match = re.fullmatch(PARTICIPANT_FILE_REGEX, filename)
-                if match:
-                    discovered_ids.append(int(match.group(1)))
-        except OSError as e:
-            raise RuntimeError(
-                f"Error accessing dataset directory '{self.dataset_dir}': {e}"
-            ) from e
+        # Discover available participant files using shared helper
+        participant_ids = self._discover_participant_ids()
 
-        if not discovered_ids:
+        if not participant_ids:
             raise ValueError(
                 f"No participant files found in '{self.dataset_dir}'"
             )
-        participant_ids = sorted(set(discovered_ids))
 
         all_data = []
         for participant_id in participant_ids:
