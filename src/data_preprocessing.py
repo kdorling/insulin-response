@@ -183,7 +183,7 @@ class UCIDiabetesLoader(DatasetLoader):
 
             logger.info(f"Dataset validation passed: {self.dataset_path}")
             return True
-        except (OSError, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+        except (OSError, UnicodeDecodeError, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
             raise ValueError(f"Dataset file is corrupted: {self.dataset_path}. Error: {e}") from e
 
     def load(self) -> pd.DataFrame:
@@ -260,6 +260,14 @@ class CGMacrosLoader(DatasetLoader):
             't2d': list(range(32, MAX_PARTICIPANT_ID + 1))  # Participants 32-45
         }
 
+    @property
+    def _expected_file_columns(self) -> list[str]:
+        """Columns expected in raw participant CSV files (excludes derived columns)."""
+        return [
+            c for c in self.required_columns
+            if c not in ('participant_id', 'health_group')
+        ]
+
     def download(self) -> bool:
         """
         Download/clone the CGMacros dataset repository.
@@ -291,27 +299,37 @@ class CGMacrosLoader(DatasetLoader):
         if not os.path.exists(self.dataset_dir):
             raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
 
-        # Look specifically for participant_*.csv files
+        # Use the same regex-based discovery as load() for consistency
         participant_files = [
             f for f in os.listdir(self.dataset_dir)
-            if f.startswith("participant_") and f.endswith(".csv")
+            if re.match(r"participant_\d+\.csv$", f)
         ]
         if len(participant_files) == 0:
             raise ValueError(
                 f"No participant CSV files found in dataset directory: {self.dataset_dir}"
             )
 
-        # Verify at least one file is parseable with required columns
-        expected_file_columns = [
-            c for c in self.required_columns
-            if c not in ('participant_id', 'health_group')
-        ]
-        valid_count = 0
+        # Filter out dropout participants, consistent with load()
+        non_dropout_files = []
         for filename in participant_files:
+            match = re.match(r"participant_(\d+)\.csv$", filename)
+            if match:
+                pid = int(match.group(1))
+                if pid not in DROPOUT_PARTICIPANTS:
+                    non_dropout_files.append(filename)
+
+        if len(non_dropout_files) == 0:
+            raise ValueError(
+                f"No non-dropout participant files found in: {self.dataset_dir}"
+            )
+
+        # Verify at least one file is parseable with required columns
+        valid_count = 0
+        for filename in non_dropout_files:
             filepath = os.path.join(self.dataset_dir, filename)
             try:
                 sample = pd.read_csv(filepath, nrows=1)
-                missing = [c for c in expected_file_columns if c not in sample.columns]
+                missing = [c for c in self._expected_file_columns if c not in sample.columns]
                 if not missing and not sample.empty:
                     valid_count += 1
             except (pd.errors.ParserError, pd.errors.EmptyDataError, OSError):
@@ -364,10 +382,7 @@ class CGMacrosLoader(DatasetLoader):
         try:
             df = pd.read_csv(participant_file)
 
-            expected_file_columns = [
-                c for c in self.required_columns
-                if c not in ('participant_id', 'health_group')
-            ]
+            expected_file_columns = self._expected_file_columns
             missing = [c for c in expected_file_columns if c not in df.columns]
             if missing:
                 logger.error(f"Participant {participant_id} missing columns: {missing}")
@@ -414,8 +429,8 @@ class CGMacrosLoader(DatasetLoader):
                 if match:
                     discovered_ids.append(int(match.group(1)))
         except OSError as e:
-            raise FileNotFoundError(
-                f"Cannot access dataset directory '{self.dataset_dir}': {e}"
+            raise RuntimeError(
+                f"Error accessing dataset directory '{self.dataset_dir}': {e}"
             ) from e
 
         if not discovered_ids:

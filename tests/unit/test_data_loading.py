@@ -153,6 +153,24 @@ class TestExceptionHandling:
             with pytest.raises(ValueError):
                 loader.load()
 
+    def test_validate_binary_garbage_raises_value_error_with_corruption_message(self):
+        """validate() should catch UnicodeDecodeError and re-raise as ValueError
+        with a clear corruption message, not leak the raw decode error."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            garbage_path = os.path.join(temp_dir, "uci_diabetes.csv")
+            # Use bytes that trigger UnicodeDecodeError specifically (not ParserError)
+            with open(garbage_path, "wb") as f:
+                f.write(b"\x80\x81\x82\x83\x84\x85" * 100)
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError, match="corrupted") as exc_info:
+                loader.validate()
+            # Should NOT be a raw UnicodeDecodeError — should be wrapped
+            assert type(exc_info.value) is ValueError, (
+                f"Expected plain ValueError with corruption message, "
+                f"got {type(exc_info.value).__name__}"
+            )
+
 
 class TestEmptyDatasetRejection:
     """Loaders should reject datasets that contain only headers (no data rows)."""
@@ -284,6 +302,100 @@ class TestCGMacrosErrorTypeConsistency:
             loader = CGMacrosLoader(data_dir=temp_dir)
             with pytest.raises(ValueError):
                 loader.load()
+
+
+class TestCGMacrosValidateLoadConsistency:
+    """validate() and load() should use the same file discovery logic."""
+
+    def test_validate_rejects_non_numeric_participant_files(self):
+        """validate() should reject directories with only non-numeric participant files
+        like participant_backup.csv (matching startswith/endswith but not regex)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # This file matches startswith("participant_") and endswith(".csv")
+            # but does NOT match the regex ^participant_(\d+)\.csv$
+            data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            data.to_csv(os.path.join(cgmacros_dir, "participant_backup.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError):
+                loader.validate()
+
+    def test_validate_rejects_dropout_only_participants(self):
+        """validate() should reject directories containing only dropout participant files."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            # All dropout participants
+            for pid in DROPOUT_PARTICIPANTS:
+                data.to_csv(os.path.join(cgmacros_dir, f"participant_{pid}.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError):
+                loader.validate()
+
+    def test_validate_accepts_valid_non_dropout_participant(self):
+        """validate() should pass when at least one non-dropout numeric participant exists."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            assert loader.validate() is True
+
+
+class TestCGMacrosLoadOSError:
+    """load() should raise RuntimeError (not FileNotFoundError) for permission errors on listdir."""
+
+    def test_load_listdir_oserror_raises_runtime_error(self):
+        """When os.listdir fails on an existing directory, raise RuntimeError."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+
+            # Remove read permission to trigger OSError on listdir
+            if os.name == "posix":
+                os.chmod(cgmacros_dir, 0o000)
+                try:
+                    with pytest.raises(RuntimeError, match="Error accessing"):
+                        loader.load()
+                finally:
+                    os.chmod(cgmacros_dir, 0o700)
+            else:
+                pytest.skip("POSIX permissions required for this test")
 
 
 class TestTimestampParsing:
@@ -518,21 +630,42 @@ class TestParticipantIdParsing:
             assert len(result) == 1
             assert all(result['participant_id'] == 1)
 
-    def test_regex_extraction_used_for_participant_ids(self):
-        """Participant ID extraction should use regex, not fragile string manipulation."""
-        import importlib
-        source = importlib.util.find_spec('src.data_preprocessing')
-        assert source is not None
-        with open(source.origin, 'r') as f:
-            content = f.read()
-        # The load() method should use re.search or re.match for participant ID extraction
-        assert 'import re' in content or 'from re import' in content, (
-            "Module should import 're' for robust participant ID extraction"
-        )
-        assert 're.search' in content or 're.match' in content, (
-            "Participant ID extraction should use regex (re.search or re.match) "
-            "instead of fragile string replacement"
-        )
+    def test_only_exact_numeric_participant_filenames_are_loaded(self):
+        """Only files matching participant_<number>.csv should contribute rows."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            valid_data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=1, freq='5min'),
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_2.csv"), index=False)
+
+            # Similar-looking but invalid filenames should be ignored.
+            pd.DataFrame({'col': [1]}).to_csv(
+                os.path.join(cgmacros_dir, "participant_02_backup.csv"), index=False
+            )
+            pd.DataFrame({'col': [1]}).to_csv(
+                os.path.join(cgmacros_dir, "participant_.csv"), index=False
+            )
+            pd.DataFrame({'col': [1]}).to_csv(
+                os.path.join(cgmacros_dir, "participant_abc.csv"), index=False
+            )
+            pd.DataFrame({'col': [1]}).to_csv(
+                os.path.join(cgmacros_dir, "xparticipant_3.csv"), index=False
+            )
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            result = loader.load()
+
+            assert len(result) == 1
+            assert all(result['participant_id'] == 2)
 
 
 class TestFutureAnnotationsCompatibility:
@@ -541,10 +674,6 @@ class TestFutureAnnotationsCompatibility:
     def test_module_uses_future_annotations(self):
         """data_preprocessing module should use 'from __future__ import annotations'
         so that list[str] annotations work on Python 3.8."""
-        import src.data_preprocessing as mod
-        assert hasattr(mod, '__annotations__') or 'annotations' in getattr(mod, '__future__', set()) or True
-        # The real test: the module imports without error, which means
-        # annotations are properly deferred. We verify the import exists.
         import importlib
         source = importlib.util.find_spec('src.data_preprocessing')
         assert source is not None
