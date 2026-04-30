@@ -139,7 +139,7 @@ class TestExceptionHandling:
                 f.write("more,broken,rows\n")
 
             loader = UCIDiabetesLoader(data_dir=temp_dir)
-            with pytest.raises((ValueError, pd.errors.ParserError)):
+            with pytest.raises(ValueError):
                 loader.load()
 
     def test_load_binary_garbage_raises_value_error(self):
@@ -178,6 +178,112 @@ class TestEmptyDatasetRejection:
             loader = UCIDiabetesLoader(data_dir=temp_dir)
             with pytest.raises(ValueError, match="[Ee]mpty"):
                 loader.validate()
+
+
+class TestUCIValidateChecksColumns:
+    """UCIDiabetesLoader.validate() should verify required columns are present."""
+
+    def test_validate_rejects_csv_with_wrong_columns(self):
+        """validate() should raise ValueError when CSV has wrong schema."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = os.path.join(temp_dir, "uci_diabetes.csv")
+            data = pd.DataFrame({
+                'wrong_col_a': [1.0],
+                'wrong_col_b': [2.0],
+            })
+            data.to_csv(csv_path, index=False)
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError, match="[Mm]issing required columns"):
+                loader.validate()
+
+    def test_validate_passes_with_correct_columns(self):
+        """validate() should pass when CSV has all required columns."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = os.path.join(temp_dir, "uci_diabetes.csv")
+            data = pd.DataFrame({
+                'pre_meal_glucose': [100.0],
+                'post_meal_glucose': [140.0],
+                'insulin_dose': [10.0],
+                'meal_timestamp': ['2024-01-01 12:00:00'],
+            })
+            data.to_csv(csv_path, index=False)
+
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            assert loader.validate() is True
+
+
+class TestCGMacrosValidateChecksParseability:
+    """CGMacrosLoader.validate() should verify at least one file is parseable with required columns."""
+
+    def test_validate_rejects_unparseable_csv(self):
+        """validate() should raise ValueError when CSV files can't be parsed."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write a CSV with wrong columns
+            data = pd.DataFrame({'wrong_col': [1.0]})
+            data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError, match="[Nn]o .* valid|[Mm]issing|parseable|required columns"):
+                loader.validate()
+
+    def test_validate_passes_with_valid_participant_file(self):
+        """validate() should pass when at least one participant file has required columns."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            assert loader.validate() is True
+
+
+class TestCGMacrosErrorTypeConsistency:
+    """CGMacrosLoader should use consistent error types for 'no participant files' condition."""
+
+    def test_validate_raises_valueerror_for_no_participant_files(self):
+        """validate() should raise ValueError when directory has CSVs but no participant_*.csv files."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write a non-participant CSV so the directory isn't empty
+            data = pd.DataFrame({'col': [1]})
+            data.to_csv(os.path.join(cgmacros_dir, "random.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            # validate() currently passes here because it only checks for *.csv files
+            # After fix, it should check for participant_*.csv specifically
+            # and raise ValueError for incomplete dataset
+            with pytest.raises(ValueError):
+                loader.validate()
+
+    def test_load_raises_valueerror_for_no_participant_files(self):
+        """load() should raise ValueError (not FileNotFoundError) when no participant files exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            # Write a non-participant CSV
+            data = pd.DataFrame({'col': [1]})
+            data.to_csv(os.path.join(cgmacros_dir, "random.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError):
+                loader.load()
 
 
 class TestTimestampParsing:

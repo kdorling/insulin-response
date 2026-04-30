@@ -127,14 +127,15 @@ class UCIDiabetesLoader(DatasetLoader):
 
     def validate(self) -> bool:
         """
-        Validate that the dataset file exists and is not corrupted.
+        Validate that the dataset file exists, is not corrupted, and contains
+        the required columns.
 
         Returns:
             True if validation passes
 
         Raises:
             FileNotFoundError: If dataset file is missing
-            ValueError: If dataset is corrupted or empty
+            ValueError: If dataset is corrupted, empty, or missing required columns
         """
         if not os.path.exists(self.dataset_path):
             raise FileNotFoundError(f"Dataset file not found: {self.dataset_path}")
@@ -147,6 +148,12 @@ class UCIDiabetesLoader(DatasetLoader):
             sample = pd.read_csv(self.dataset_path, nrows=1)
             if sample.empty:
                 raise ValueError(f"Dataset file has no data rows (empty): {self.dataset_path}")
+
+            missing_columns = [col for col in self.required_columns if col not in sample.columns]
+            if missing_columns:
+                raise ValueError(
+                    f"Missing required columns in {self.dataset_path}: {missing_columns}"
+                )
 
             logger.info(f"Dataset validation passed: {self.dataset_path}")
             return True
@@ -252,23 +259,55 @@ class CGMacrosLoader(DatasetLoader):
 
     def validate(self) -> bool:
         """
-        Validate that the dataset directory exists and contains participant files.
+        Validate that the dataset directory exists, contains parseable participant
+        files, and that at least one file has the required columns.
 
         Returns:
             True if validation passes
 
         Raises:
             FileNotFoundError: If dataset directory is missing
-            ValueError: If dataset is incomplete
+            ValueError: If dataset is incomplete or no valid participant files found
         """
         if not os.path.exists(self.dataset_dir):
             raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
 
-        csv_files = [f for f in os.listdir(self.dataset_dir) if f.endswith('.csv')]
-        if len(csv_files) == 0:
-            raise ValueError(f"No CSV files found in dataset directory: {self.dataset_dir}")
+        # Look specifically for participant_*.csv files
+        participant_files = [
+            f for f in os.listdir(self.dataset_dir)
+            if f.startswith("participant_") and f.endswith(".csv")
+        ]
+        if len(participant_files) == 0:
+            raise ValueError(
+                f"No participant CSV files found in dataset directory: {self.dataset_dir}"
+            )
 
-        logger.info(f"Dataset validation passed: found {len(csv_files)} participant files")
+        # Verify at least one file is parseable with required columns
+        expected_file_columns = [
+            c for c in self.required_columns
+            if c not in ('participant_id', 'health_group')
+        ]
+        valid_count = 0
+        for filename in participant_files:
+            filepath = os.path.join(self.dataset_dir, filename)
+            try:
+                sample = pd.read_csv(filepath, nrows=1)
+                missing = [c for c in expected_file_columns if c not in sample.columns]
+                if not missing and not sample.empty:
+                    valid_count += 1
+            except (pd.errors.ParserError, pd.errors.EmptyDataError, OSError):
+                continue
+
+        if valid_count == 0:
+            raise ValueError(
+                f"No valid participant files with required columns found in: "
+                f"{self.dataset_dir}"
+            )
+
+        logger.info(
+            f"Dataset validation passed: found {valid_count} valid participant files "
+            f"out of {len(participant_files)} total"
+        )
         return True
 
     def _categorize_health_group(self, participant_id: int) -> str:
@@ -368,7 +407,7 @@ class CGMacrosLoader(DatasetLoader):
             ) from e
 
         if not discovered_ids:
-            raise FileNotFoundError(
+            raise ValueError(
                 f"No participant files found in '{self.dataset_dir}'"
             )
         participant_ids = sorted(set(discovered_ids))
