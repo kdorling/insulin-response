@@ -377,21 +377,21 @@ class TestCGMacrosLoadOSError:
     """load() should raise ValueError (not FileNotFoundError) for permission errors on listdir."""
 
     def test_load_listdir_oserror_raises_valueerror(self, monkeypatch):
-        """When os.listdir fails on an existing directory, raise ValueError."""
+        """When os.scandir fails on an existing directory, raise ValueError."""
         with tempfile.TemporaryDirectory() as temp_dir:
             cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
             os.makedirs(cgmacros_dir)
 
             loader = CGMacrosLoader(data_dir=temp_dir)
 
-            original_listdir = os.listdir
+            original_scandir = os.scandir
 
-            def mocked_listdir(path):
+            def mocked_scandir(path):
                 if path == cgmacros_dir:
                     raise PermissionError("Permission denied")
-                return original_listdir(path)
+                return original_scandir(path)
 
-            monkeypatch.setattr(os, "listdir", mocked_listdir)
+            monkeypatch.setattr(os, "scandir", mocked_scandir)
 
             with pytest.raises(ValueError, match="Cannot access"):
                 loader.load()
@@ -694,14 +694,14 @@ class TestCGMacrosValidateHandlesOSError:
 
             loader = CGMacrosLoader(data_dir=temp_dir)
 
-            original_listdir = os.listdir
+            original_scandir = os.scandir
 
-            def mocked_listdir(path):
+            def mocked_scandir(path):
                 if path == cgmacros_dir:
                     raise PermissionError("Permission denied")
-                return original_listdir(path)
+                return original_scandir(path)
 
-            monkeypatch.setattr(os, "listdir", mocked_listdir)
+            monkeypatch.setattr(os, "scandir", mocked_scandir)
 
             with pytest.raises(ValueError, match="Cannot access dataset directory"):
                 loader.validate()
@@ -909,7 +909,7 @@ class TestCGMacrosParseParticipantNoTypeError:
 
             original_parse = CGMacrosLoader._parse_participant
 
-            def raise_typeerror(self_inner, participant_id):
+            def raise_typeerror(self_inner, participant_id, filename=None):
                 raise TypeError("programming error should not be swallowed")
 
             monkeypatch.setattr(CGMacrosLoader, "_parse_participant", raise_typeerror)
@@ -1134,7 +1134,7 @@ class TestCGMacrosDiscoverParticipantIds:
     """PR Comment (Gemini): Participant ID discovery should be a shared helper method."""
 
     def test_discover_participant_ids_returns_sorted_unique_ids(self):
-        """_discover_participant_ids() should return sorted unique participant IDs."""
+        """_discover_participant_ids() should return sorted unique participant ID→filename mapping."""
         with tempfile.TemporaryDirectory() as temp_dir:
             cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
             os.makedirs(cgmacros_dir)
@@ -1157,7 +1157,10 @@ class TestCGMacrosDiscoverParticipantIds:
 
             loader = CGMacrosLoader(data_dir=temp_dir)
             ids = loader._discover_participant_ids()
-            assert ids == [1, 3, 5], f"Expected [1, 3, 5], got {ids}"
+            assert list(ids.keys()) == [1, 3, 5], f"Expected keys [1, 3, 5], got {list(ids.keys())}"
+            assert ids[1] == "participant_1.csv"
+            assert ids[3] == "participant_3.csv"
+            assert ids[5] == "participant_5.csv"
 
     def test_discover_participant_ids_raises_on_unreadable_dir(self, monkeypatch):
         """_discover_participant_ids() should raise ValueError for unreadable directories."""
@@ -1167,20 +1170,20 @@ class TestCGMacrosDiscoverParticipantIds:
 
             loader = CGMacrosLoader(data_dir=temp_dir)
 
-            original_listdir = os.listdir
+            original_scandir = os.scandir
 
-            def mocked_listdir(path):
+            def mocked_scandir(path):
                 if path == cgmacros_dir:
                     raise PermissionError("Permission denied")
-                return original_listdir(path)
+                return original_scandir(path)
 
-            monkeypatch.setattr(os, "listdir", mocked_listdir)
+            monkeypatch.setattr(os, "scandir", mocked_scandir)
 
             with pytest.raises(ValueError, match="Cannot access"):
                 loader._discover_participant_ids()
 
     def test_discover_participant_ids_empty_dir_returns_empty(self):
-        """_discover_participant_ids() should return empty list for dir with no participant files."""
+        """_discover_participant_ids() should return empty dict for dir with no participant files."""
         with tempfile.TemporaryDirectory() as temp_dir:
             cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
             os.makedirs(cgmacros_dir)
@@ -1192,7 +1195,7 @@ class TestCGMacrosDiscoverParticipantIds:
 
             loader = CGMacrosLoader(data_dir=temp_dir)
             ids = loader._discover_participant_ids()
-            assert ids == []
+            assert ids == {}
 
 
 class TestValidationLogConsistency:
@@ -1235,4 +1238,128 @@ class TestValidationLogConsistency:
             )
             assert "1 valid" in msg and "out of 1" in msg, (
                 f"Log should report 1 valid out of 1 non-dropout (not 2 total): {msg}"
+            )
+
+
+class TestPyprojectPythonVersionFloor:
+    """PR Comment (Copilot): requires-python should match the actual supported floor
+    of the dependency ranges (pandas>=2.0.0 dropped Python 3.8)."""
+
+    def test_requires_python_is_at_least_3_9(self):
+        """requires-python should be >=3.9 since pandas>=2.0.0 requires Python 3.9+."""
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        pyproject_path = os.path.join(project_root, "pyproject.toml")
+        with open(pyproject_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        # Should NOT claim 3.8 support since pandas>=2.0.0 dropped it
+        assert '>=3.8' not in content, (
+            "requires-python should not claim Python 3.8 support; "
+            "pandas>=2.0.0 requires Python 3.9+"
+        )
+        assert '>=3.9' in content, (
+            "requires-python should be >=3.9 to match pandas>=2.0.0 requirements"
+        )
+
+
+class TestLeadingZeroParticipantFilenames:
+    """PR Comment (Copilot): _discover_participant_ids() should handle filenames with
+    leading zeros like participant_02.csv correctly."""
+
+    def test_leading_zero_participant_file_is_loaded(self):
+        """participant_02.csv should be loaded correctly (as participant ID 2)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=2, freq='5min'),
+                'glucose': [100.0, 110.0],
+                'carbs': [30.0, 40.0],
+                'fat': [10.0, 15.0],
+                'protein': [20.0, 25.0],
+                'activity': [1.0, 2.0],
+                'heart_rate': [70.0, 80.0],
+            })
+            # Use a leading-zero filename
+            data.to_csv(os.path.join(cgmacros_dir, "participant_02.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            result = loader.load()
+            assert len(result) == 2
+            assert all(result['participant_id'] == 2)
+
+    def test_leading_zero_and_canonical_both_loaded(self):
+        """Both participant_2.csv and participant_02.csv should be discoverable.
+        If both exist, the canonical form (participant_2.csv) data should be loaded."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            data_canonical = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=1, freq='5min'),
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            data_leading_zero = pd.DataFrame({
+                'timestamp': pd.date_range('2024-02-01', periods=1, freq='5min'),
+                'glucose': [200.0],
+                'carbs': [50.0],
+                'fat': [20.0],
+                'protein': [30.0],
+                'activity': [2.0],
+                'heart_rate': [80.0],
+            })
+            data_canonical.to_csv(os.path.join(cgmacros_dir, "participant_2.csv"), index=False)
+            data_leading_zero.to_csv(os.path.join(cgmacros_dir, "participant_02.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            # Both map to pid=2, but _discover_participant_ids deduplicates.
+            # The canonical filename (participant_2.csv) should be used for loading.
+            ids = loader._discover_participant_ids()
+            assert 2 in ids
+            # load() should not crash
+            result = loader.load()
+            assert all(result['participant_id'] == 2)
+
+
+class TestGlucoseValidationNonNumericWarning:
+    """PR Comment (Gemini): _validate_glucose_range should log a warning when
+    non-numeric values are encountered in glucose columns."""
+
+    def test_non_numeric_glucose_values_trigger_warning(self, caplog):
+        """Non-numeric values in glucose columns should produce a data quality warning."""
+        import logging
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            df = pd.DataFrame({
+                'glucose': ['bad_value', 'also_bad', '100.0'],
+            })
+            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+                loader._validate_glucose_range(df, ['glucose'])
+
+            warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+            assert any("non-numeric" in msg.lower() for msg in warning_messages), (
+                "Should warn about non-numeric values in glucose columns as a data quality issue"
+            )
+
+    def test_all_numeric_glucose_no_non_numeric_warning(self, caplog):
+        """All-numeric glucose columns should not trigger a non-numeric warning."""
+        import logging
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            df = pd.DataFrame({
+                'glucose': [100.0, 200.0, 300.0],
+            })
+            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+                loader._validate_glucose_range(df, ['glucose'])
+
+            warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+            assert not any("non-numeric" in msg.lower() for msg in warning_messages), (
+                "Should not warn about non-numeric values when all values are numeric"
             )
