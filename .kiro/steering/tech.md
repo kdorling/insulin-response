@@ -2,6 +2,7 @@
 
 ## Language and Runtime
 - Python 3.x
+- Always use the project virtual environment Python at `./venv/bin/python` and `./venv/bin/pip` when running Python commands or installing packages. Prefer `./venv/bin/pytest`, `./venv/bin/jupyter`, etc. over bare command names to ensure the correct environment is used.
 
 ## Core Dependencies
 - pandas, numpy — data manipulation
@@ -35,37 +36,37 @@ outputs/             # Visualizations and results
 
 ### Setup
 ```bash
-pip install -r requirements.txt
+./venv/bin/pip install -r requirements.txt
 ```
 
 ### Testing
 ```bash
 # Run all tests
-pytest
+./venv/bin/pytest
 
 # Run unit tests only
-pytest tests/unit/
+./venv/bin/pytest tests/unit/
 
 # Run property tests only
-pytest tests/property/
+./venv/bin/pytest tests/property/
 
 # Run with coverage
-pytest --cov=src
+./venv/bin/pytest --cov=src
 ```
 
 ### Data Processing
 ```bash
-python src/data_preprocessing.py
+./venv/bin/python src/data_preprocessing.py
 ```
 
 ### Model Evaluation
 ```bash
-python src/evaluate.py
+./venv/bin/python src/evaluate.py
 ```
 
 ### Exploratory Analysis
 ```bash
-jupyter notebook notebooks/EDA.ipynb
+./venv/bin/jupyter notebook notebooks/EDA.ipynb
 ```
 
 ## Testing Philosophy

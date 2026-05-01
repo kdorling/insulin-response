@@ -55,7 +55,8 @@ class DatasetLoader(ABC):
                                context: str = "") -> None:
         """
         Validate glucose values are within the expected range and log warnings
-        for out-of-range values.
+        for out-of-range values. Non-numeric values are coerced to NaN and
+        logged as a data quality warning.
 
         Args:
             df: DataFrame containing glucose columns to validate
@@ -66,10 +67,19 @@ class DatasetLoader(ABC):
             if col not in df.columns:
                 continue
             vals = pd.to_numeric(df[col], errors='coerce')
+            ctx = f"{context}: " if context else ""
+            # Warn about non-numeric values that were coerced to NaN
+            n_non_numeric = vals.isna().sum() - df[col].isna().sum()
+            if n_non_numeric > 0:
+                logger.warning(
+                    "%s%s non-numeric values in '%s' were coerced to NaN",
+                    ctx,
+                    n_non_numeric,
+                    col,
+                )
             out_of_range = (vals < MIN_GLUCOSE) | (vals > MAX_GLUCOSE)
             n_out = out_of_range.sum()
             if n_out > 0:
-                ctx = f"{context}: " if context else ""
                 logger.warning(
                     "%s%s values in '%s' are out of range [%s, %s] mg/dL",
                     ctx,
@@ -290,26 +300,33 @@ class CGMacrosLoader(DatasetLoader):
             "Expected structure: data/cgmacros/participant_*.csv files."
         )
 
-    def _discover_participant_ids(self) -> list[int]:
+    def _discover_participant_ids(self) -> dict[int, str]:
         """
-        Discover available participant IDs from the dataset directory.
+        Discover available participant IDs and their filenames from the dataset directory.
 
         Scans the dataset directory for files matching the participant filename
-        pattern and returns their numeric IDs, sorted and deduplicated.
+        pattern and returns a mapping of numeric IDs to actual filenames.
+        This preserves the real filename (e.g., participant_02.csv) so that
+        subsequent reads use the correct path even for non-canonical names.
 
         Returns:
-            Sorted list of unique participant IDs found in the directory
+            Dict mapping participant IDs to their actual filenames, sorted by ID
 
         Raises:
             ValueError: If the dataset directory cannot be read
         """
         try:
-            discovered_ids = []
-            for filename in os.listdir(self.dataset_dir):
-                match = re.fullmatch(PARTICIPANT_FILE_REGEX, filename)
-                if match:
-                    discovered_ids.append(int(match.group(1)))
-            return sorted(set(discovered_ids))
+            id_to_filename: dict[int, str] = {}
+            for entry in os.scandir(self.dataset_dir):
+                if entry.is_file():
+                    match = re.fullmatch(PARTICIPANT_FILE_REGEX, entry.name)
+                    if match:
+                        pid = int(match.group(1))
+                        # If multiple files map to the same ID (e.g., participant_2.csv
+                        # and participant_02.csv), prefer the canonical form.
+                        if pid not in id_to_filename or entry.name == f"participant_{pid}.csv":
+                            id_to_filename[pid] = entry.name
+            return dict(sorted(id_to_filename.items()))
         except OSError as e:
             raise ValueError(
                 f"Cannot access dataset directory: {self.dataset_dir}"
@@ -331,28 +348,28 @@ class CGMacrosLoader(DatasetLoader):
             raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
 
         # Use shared discovery helper for consistency with load()
-        participant_ids = self._discover_participant_ids()
+        id_to_filename = self._discover_participant_ids()
 
-        if len(participant_ids) == 0:
+        if len(id_to_filename) == 0:
             raise ValueError(
                 f"No participant CSV files found in dataset directory: {self.dataset_dir}"
             )
 
         # Filter out dropout participants, consistent with load()
-        non_dropout_ids = [
-            pid for pid in participant_ids
+        non_dropout = {
+            pid: fname for pid, fname in id_to_filename.items()
             if pid not in DROPOUT_PARTICIPANTS
-        ]
+        }
 
-        if len(non_dropout_ids) == 0:
+        if len(non_dropout) == 0:
             raise ValueError(
                 f"No non-dropout participant files found in: {self.dataset_dir}"
             )
 
         # Verify at least one file is parseable with required columns
         valid_count = 0
-        for pid in non_dropout_ids:
-            filepath = os.path.join(self.dataset_dir, f"participant_{pid}.csv")
+        for pid, fname in non_dropout.items():
+            filepath = os.path.join(self.dataset_dir, fname)
             try:
                 sample = pd.read_csv(filepath, nrows=1)
                 missing = [c for c in self._expected_file_columns if c not in sample.columns]
@@ -369,7 +386,7 @@ class CGMacrosLoader(DatasetLoader):
 
         logger.info(
             f"Dataset validation passed: found {valid_count} valid non-dropout "
-            f"participant files out of {len(non_dropout_ids)} total"
+            f"participant files out of {len(non_dropout)} total"
         )
         return True
 
@@ -389,17 +406,21 @@ class CGMacrosLoader(DatasetLoader):
         logger.warning(f"Unknown participant ID {participant_id}, cannot assign health group")
         return 'unknown'
 
-    def _parse_participant(self, participant_id: int) -> Optional[pd.DataFrame]:
+    def _parse_participant(self, participant_id: int,
+                          filename: Optional[str] = None) -> Optional[pd.DataFrame]:
         """
         Parse data for a single participant.
 
         Args:
             participant_id: Participant ID
+            filename: Actual filename to read (defaults to participant_{id}.csv)
 
         Returns:
             DataFrame with participant data, or None if file not found or missing columns
         """
-        participant_file = os.path.join(self.dataset_dir, f"participant_{participant_id}.csv")
+        if filename is None:
+            filename = f"participant_{participant_id}.csv"
+        participant_file = os.path.join(self.dataset_dir, filename)
 
         if not os.path.exists(participant_file):
             logger.debug(f"Participant file not found: {participant_file}")
@@ -458,22 +479,22 @@ class CGMacrosLoader(DatasetLoader):
             raise FileNotFoundError(error_msg)
 
         # Discover available participant files using shared helper
-        participant_ids = self._discover_participant_ids()
+        id_to_filename = self._discover_participant_ids()
 
-        if not participant_ids:
+        if not id_to_filename:
             raise ValueError(
                 f"No participant files found in '{self.dataset_dir}'"
             )
 
         all_data = []
-        for participant_id in participant_ids:
+        for participant_id, filename in id_to_filename.items():
             if participant_id in DROPOUT_PARTICIPANTS:
                 logger.info(f"Excluding dropout participant: {participant_id}")
                 continue
 
-            df = self._parse_participant(participant_id)
+            df = self._parse_participant(participant_id, filename=filename)
             if df is not None:
-                all_data.append(df)
+                all_data.append(df[self.required_columns])
 
         if len(all_data) == 0:
             raise ValueError("No valid participant data found in dataset")
@@ -481,4 +502,4 @@ class CGMacrosLoader(DatasetLoader):
         combined_df = pd.concat(all_data, ignore_index=True)
 
         logger.info(f"Loaded {len(combined_df)} records from {len(all_data)} participants")
-        return combined_df[self.required_columns]
+        return combined_df
