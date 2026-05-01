@@ -441,13 +441,13 @@ class TestTimestampParsing:
 
 
 class TestGlucoseValidationInBaseClass:
-    """Glucose range validation should be a shared helper in DatasetLoader."""
+    """Glucose validation and cleaning should be a shared helper in DatasetLoader."""
 
-    def test_base_class_has_validate_glucose_range_method(self):
-        """DatasetLoader should expose a _validate_glucose_range helper method."""
+    def test_base_class_has_validate_and_clean_glucose_method(self):
+        """DatasetLoader should expose a _validate_and_clean_glucose helper method."""
         from src.data_preprocessing import DatasetLoader
-        assert hasattr(DatasetLoader, '_validate_glucose_range'), (
-            "DatasetLoader base class should have a _validate_glucose_range method"
+        assert hasattr(DatasetLoader, '_validate_and_clean_glucose'), (
+            "DatasetLoader base class should have a _validate_and_clean_glucose method"
         )
 
     def test_track_a_uses_shared_glucose_validation(self, caplog):
@@ -669,18 +669,18 @@ class TestParticipantIdParsing:
 
 
 class TestFutureAnnotationsCompatibility:
-    """Type annotations should be compatible with Python 3.8+."""
+    """Type annotations should use modern syntax compatible with Python 3.9+."""
 
     def test_module_uses_future_annotations(self):
         """data_preprocessing module should use 'from __future__ import annotations'
-        so that list[str] annotations work on Python 3.8."""
+        so that list[str] annotations work without runtime evaluation."""
         import importlib
         source = importlib.util.find_spec('src.data_preprocessing')
         assert source is not None
         with open(source.origin, 'r') as f:
             content = f.read()
         assert 'from __future__ import annotations' in content, (
-            "Module should use 'from __future__ import annotations' for Python 3.8+ compatibility"
+            "Module should use 'from __future__ import annotations' for deferred annotation evaluation"
         )
 
 
@@ -1049,7 +1049,7 @@ class TestCGMacrosLoadEmptyCombinedDataFrame:
 
 
 class TestGlucoseValidationNonNumericData:
-    """_validate_glucose_range should handle non-numeric glucose columns
+    """_validate_and_clean_glucose should handle non-numeric glucose columns
     using pd.to_numeric with errors='coerce' to avoid TypeError on corrupted data."""
 
     def test_track_a_non_numeric_glucose_does_not_raise(self, caplog):
@@ -1067,8 +1067,8 @@ class TestGlucoseValidationNonNumericData:
             result = loader.load()
             assert len(result) == 2
 
-    def test_validate_glucose_range_coerces_non_numeric(self, caplog):
-        """_validate_glucose_range should coerce non-numeric values to NaN
+    def test_validate_and_clean_glucose_coerces_non_numeric(self, caplog):
+        """_validate_and_clean_glucose should coerce non-numeric values to NaN
         rather than raising TypeError."""
         import logging
 
@@ -1079,7 +1079,7 @@ class TestGlucoseValidationNonNumericData:
             })
             # Should not raise — non-numeric values are coerced to NaN
             with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
-                loader._validate_glucose_range(df, ['glucose'])
+                loader._validate_and_clean_glucose(df, ['glucose'])
 
             # Should still detect the out-of-range value (700.0 > MAX_GLUCOSE)
             warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
@@ -1329,7 +1329,7 @@ class TestLeadingZeroParticipantFilenames:
 
 
 class TestGlucoseValidationNonNumericWarning:
-    """_validate_glucose_range should log a warning when
+    """_validate_and_clean_glucose should log a warning when
     non-numeric values are encountered in glucose columns."""
 
     def test_non_numeric_glucose_values_trigger_warning(self, caplog):
@@ -1342,7 +1342,7 @@ class TestGlucoseValidationNonNumericWarning:
                 'glucose': ['bad_value', 'also_bad', '100.0'],
             })
             with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
-                loader._validate_glucose_range(df, ['glucose'])
+                loader._validate_and_clean_glucose(df, ['glucose'])
 
             warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
             assert any("non-numeric" in msg.lower() for msg in warning_messages), (
@@ -1359,7 +1359,7 @@ class TestGlucoseValidationNonNumericWarning:
                 'glucose': [100.0, 200.0, 300.0],
             })
             with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
-                loader._validate_glucose_range(df, ['glucose'])
+                loader._validate_and_clean_glucose(df, ['glucose'])
 
             warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
             assert not any("non-numeric" in msg.lower() for msg in warning_messages), (
@@ -1368,20 +1368,20 @@ class TestGlucoseValidationNonNumericWarning:
 
 
 class TestGlucoseValidationUpdatesDataFrame:
-    """_validate_glucose_range should update the DataFrame columns to numeric types
+    """_validate_and_clean_glucose should update the DataFrame columns to numeric types
     so downstream operations don't encounter string data."""
 
-    def test_validate_glucose_range_updates_df_columns_to_numeric(self):
+    def test_validate_and_clean_glucose_updates_df_columns_to_numeric(self):
         """After validation, the DataFrame column should contain numeric values (not strings)."""
         with tempfile.TemporaryDirectory() as temp_dir:
             loader = UCIDiabetesLoader(data_dir=temp_dir)
             df = pd.DataFrame({
                 'glucose': ['100.0', '200.0', 'bad', '300.0'],
             })
-            loader._validate_glucose_range(df, ['glucose'])
+            loader._validate_and_clean_glucose(df, ['glucose'])
             # After validation, column should be numeric, not object/string
             assert pd.api.types.is_numeric_dtype(df['glucose']), (
-                "_validate_glucose_range should update the DataFrame column to numeric dtype"
+                "_validate_and_clean_glucose should update the DataFrame column to numeric dtype"
             )
             # 'bad' should have been coerced to NaN
             assert df['glucose'].isna().sum() == 1
@@ -1390,14 +1390,14 @@ class TestGlucoseValidationUpdatesDataFrame:
             assert df['glucose'].iloc[1] == 200.0
             assert df['glucose'].iloc[3] == 300.0
 
-    def test_validate_glucose_range_preserves_already_numeric(self):
+    def test_validate_and_clean_glucose_preserves_already_numeric(self):
         """If column is already numeric, validation should not corrupt values."""
         with tempfile.TemporaryDirectory() as temp_dir:
             loader = UCIDiabetesLoader(data_dir=temp_dir)
             df = pd.DataFrame({
                 'glucose': [100.0, 200.0, 300.0],
             })
-            loader._validate_glucose_range(df, ['glucose'])
+            loader._validate_and_clean_glucose(df, ['glucose'])
             assert pd.api.types.is_numeric_dtype(df['glucose'])
             assert df['glucose'].tolist() == [100.0, 200.0, 300.0]
 
@@ -1418,3 +1418,162 @@ class TestNullHandlerDeduplication:
             f"Logger should have at most 1 NullHandler, but has {len(null_handlers)}. "
             "Guard addHandler with 'if not logger.handlers'."
         )
+
+
+class TestParticipantIdRangeFiltering:
+    """_discover_participant_ids() should filter out IDs outside the declared range [1, MAX_PARTICIPANT_ID]."""
+
+    def test_discover_excludes_ids_above_max(self):
+        """Participant IDs > MAX_PARTICIPANT_ID should be excluded from discovery."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            valid_data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            # Valid participant within range
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+            # Participant ID above MAX_PARTICIPANT_ID (45)
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_999.csv"), index=False)
+
+            from src.data_preprocessing import MAX_PARTICIPANT_ID
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            ids = loader._discover_participant_ids()
+            assert 999 not in ids, (
+                f"Participant ID 999 > MAX_PARTICIPANT_ID ({MAX_PARTICIPANT_ID}) "
+                "should be excluded from discovery"
+            )
+            assert 1 in ids
+
+    def test_discover_excludes_ids_below_one(self):
+        """Participant IDs < 1 should be excluded from discovery."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            valid_data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_0.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            ids = loader._discover_participant_ids()
+            assert 0 not in ids, "Participant ID 0 should be excluded from discovery"
+            assert 1 in ids
+
+    def test_discover_logs_warning_for_out_of_range_ids(self, caplog):
+        """Out-of-range participant IDs should produce a log warning."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            valid_data = pd.DataFrame({
+                'timestamp': ['2024-01-01 12:00:00'],
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_100.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+                loader._discover_participant_ids()
+
+            warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+            assert any("100" in msg and "range" in msg.lower() for msg in warning_messages), (
+                "Should log a warning about out-of-range participant ID 100"
+            )
+
+    def test_load_excludes_out_of_range_participant_ids(self):
+        """load() should not include data from participants outside [1, MAX_PARTICIPANT_ID]."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            valid_data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=1, freq='5min'),
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+            valid_data.to_csv(os.path.join(cgmacros_dir, "participant_999.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            result = loader.load()
+            assert all(result['participant_id'] == 1), (
+                "Only participant 1 should be loaded; participant 999 is out of range"
+            )
+
+
+class TestReadmePythonVersion:
+    """README.md should state the correct minimum Python version."""
+
+    def test_readme_does_not_claim_python_38(self):
+        """README should not claim Python 3.8 support since requires-python is >=3.9."""
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        readme_path = os.path.join(project_root, "README.md")
+        with open(readme_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "3.8" not in content, (
+            "README should not reference Python 3.8; "
+            "pyproject.toml requires-python is >=3.9"
+        )
+
+    def test_readme_states_python_39_or_higher(self):
+        """README should state Python 3.9 or higher as a prerequisite."""
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        readme_path = os.path.join(project_root, "README.md")
+        with open(readme_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "3.9" in content, (
+            "README should mention Python 3.9 as the minimum version"
+        )
+
+
+class TestValidateAndCleanGlucoseMethodName:
+    """The glucose validation/cleaning method should be named _validate_and_clean_glucose
+    to accurately reflect its side effects (modifying the DataFrame in-place)."""
+
+    def test_method_is_named_validate_and_clean_glucose(self):
+        """DatasetLoader should have _validate_and_clean_glucose, not _validate_glucose_range."""
+        from src.data_preprocessing import DatasetLoader
+        assert hasattr(DatasetLoader, '_validate_and_clean_glucose'), (
+            "Method should be renamed from _validate_glucose_range to _validate_and_clean_glucose"
+        )
+
+    def test_validate_and_clean_glucose_coerces_and_warns(self, caplog):
+        """_validate_and_clean_glucose should coerce non-numeric values and warn about out-of-range."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            df = pd.DataFrame({
+                'glucose': ['bad', '100.0', '700.0'],
+            })
+            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+                loader._validate_and_clean_glucose(df, ['glucose'])
+
+            assert pd.api.types.is_numeric_dtype(df['glucose'])
+            warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+            assert any("non-numeric" in msg.lower() for msg in warning_messages)
+            assert any("out of range" in msg.lower() for msg in warning_messages)

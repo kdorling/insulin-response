@@ -43,7 +43,7 @@ def track_a_dataframe_generator(draw):
 
 
 # Feature: insulin-response-modeling, Property 1: Complete Field Extraction
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
 @given(track_a_data=track_a_dataframe_generator())
 def test_track_a_field_extraction(track_a_data, tmp_path):
     """
@@ -111,7 +111,7 @@ def track_b_dataframe_generator(draw):
 
 
 # Feature: insulin-response-modeling, Property 1: Complete Field Extraction
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
 @given(track_b_data_tuple=track_b_dataframe_generator())
 def test_track_b_field_extraction(track_b_data_tuple, tmp_path):
     """

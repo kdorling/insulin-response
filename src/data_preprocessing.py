@@ -52,10 +52,10 @@ class DatasetLoader(ABC):
                     exc,
                 )
 
-    def _validate_glucose_range(self, df: pd.DataFrame, glucose_columns: list[str],
-                               context: str = "") -> None:
+    def _validate_and_clean_glucose(self, df: pd.DataFrame, glucose_columns: list[str],
+                                    context: str = "") -> None:
         """
-        Validate glucose values are within the expected range and log warnings
+        Validate and clean glucose columns: coerce to numeric types, log warnings
         for out-of-range values. Non-numeric values are coerced to NaN and
         logged as a data quality warning.
 
@@ -221,16 +221,18 @@ class UCIDiabetesLoader(DatasetLoader):
                                    f"Please provide a pre-processed CSV file.")
 
         try:
-            df = pd.read_csv(self.dataset_path)
-
-            missing_columns = [col for col in self.required_columns if col not in df.columns]
+            # Check columns first for a clear error message, then use usecols for memory efficiency
+            header = pd.read_csv(self.dataset_path, nrows=0)
+            missing_columns = [col for col in self.required_columns if col not in header.columns]
             if missing_columns:
                 raise ValueError(f"Missing required columns: {missing_columns}")
+
+            df = pd.read_csv(self.dataset_path, usecols=self.required_columns)
 
             df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'], format='ISO8601')
 
             # Validate glucose ranges and warn about out-of-range values
-            self._validate_glucose_range(df, ['pre_meal_glucose', 'post_meal_glucose'])
+            self._validate_and_clean_glucose(df, ['pre_meal_glucose', 'post_meal_glucose'])
 
             if df.empty:
                 raise ValueError(f"Dataset file has no data rows (empty): {self.dataset_path}")
@@ -325,6 +327,13 @@ class CGMacrosLoader(DatasetLoader):
                         match = re.fullmatch(PARTICIPANT_FILE_REGEX, entry.name)
                         if match:
                             pid = int(match.group(1))
+                            if pid < 1 or pid > MAX_PARTICIPANT_ID:
+                                logger.warning(
+                                    "Skipping participant file '%s': ID %d is outside "
+                                    "the valid range [1, %d]",
+                                    entry.name, pid, MAX_PARTICIPANT_ID,
+                                )
+                                continue
                             # If multiple files map to the same ID (e.g., participant_2.csv
                             # and participant_02.csv), prefer the canonical form.
                             if pid not in id_to_filename or entry.name == f"participant_{pid}.csv":
@@ -447,8 +456,8 @@ class CGMacrosLoader(DatasetLoader):
 
             df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601')
 
-            # Validate glucose range and warn about out-of-range values
-            self._validate_glucose_range(
+            # Validate and clean glucose values, warn about out-of-range values
+            self._validate_and_clean_glucose(
                 df, ['glucose'], context=f"Participant {participant_id}"
             )
 
