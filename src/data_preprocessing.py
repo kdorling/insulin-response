@@ -15,8 +15,9 @@ import logging
 import re
 
 # Library-safe logging: let callers configure logging
-logging.getLogger(__name__).addHandler(logging.NullHandler())
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logger.addHandler(logging.NullHandler())
 
 # Constants
 MIN_GLUCOSE = 20  # mg/dL
@@ -70,6 +71,7 @@ class DatasetLoader(ABC):
             ctx = f"{context}: " if context else ""
             # Warn about non-numeric values that were coerced to NaN
             n_non_numeric = vals.isna().sum() - df[col].isna().sum()
+            df[col] = vals  # Ensure numeric types for downstream tasks
             if n_non_numeric > 0:
                 logger.warning(
                     "%s%s non-numeric values in '%s' were coerced to NaN",
@@ -317,15 +319,16 @@ class CGMacrosLoader(DatasetLoader):
         """
         try:
             id_to_filename: dict[int, str] = {}
-            for entry in os.scandir(self.dataset_dir):
-                if entry.is_file():
-                    match = re.fullmatch(PARTICIPANT_FILE_REGEX, entry.name)
-                    if match:
-                        pid = int(match.group(1))
-                        # If multiple files map to the same ID (e.g., participant_2.csv
-                        # and participant_02.csv), prefer the canonical form.
-                        if pid not in id_to_filename or entry.name == f"participant_{pid}.csv":
-                            id_to_filename[pid] = entry.name
+            with os.scandir(self.dataset_dir) as it:
+                for entry in it:
+                    if entry.is_file():
+                        match = re.fullmatch(PARTICIPANT_FILE_REGEX, entry.name)
+                        if match:
+                            pid = int(match.group(1))
+                            # If multiple files map to the same ID (e.g., participant_2.csv
+                            # and participant_02.csv), prefer the canonical form.
+                            if pid not in id_to_filename or entry.name == f"participant_{pid}.csv":
+                                id_to_filename[pid] = entry.name
             return dict(sorted(id_to_filename.items()))
         except OSError as e:
             raise ValueError(

@@ -1,5 +1,5 @@
 """
-Unit tests for data loading edge cases and PR comment fixes.
+Unit tests for data loading edge cases and defensive coding practices.
 
 Tests cover:
 - UCIDiabetesLoader.load() error message accuracy (no misleading download() reference)
@@ -10,6 +10,7 @@ Tests cover:
 - Timestamp parsing consistency
 """
 
+import logging
 import os
 import tempfile
 
@@ -440,7 +441,7 @@ class TestTimestampParsing:
 
 
 class TestGlucoseValidationInBaseClass:
-    """PR Comment 1: Glucose range validation should be a shared helper in DatasetLoader."""
+    """Glucose range validation should be a shared helper in DatasetLoader."""
 
     def test_base_class_has_validate_glucose_range_method(self):
         """DatasetLoader should expose a _validate_glucose_range helper method."""
@@ -497,7 +498,7 @@ class TestGlucoseValidationInBaseClass:
 
 
 class TestTimestampFormatISO8601:
-    """PR Comment 2: Timestamp parsing should use format='ISO8601' for performance."""
+    """Timestamp parsing should use format='ISO8601' for performance."""
 
     def test_track_a_handles_iso8601_timestamps(self):
         """Track A should parse ISO8601 timestamps correctly."""
@@ -547,7 +548,7 @@ class TestTimestampFormatISO8601:
 
 
 class TestParticipantIdParsing:
-    """PR Comment: Participant ID extraction should use regex for robustness."""
+    """Participant ID extraction should use regex for robustness."""
 
     def test_standard_participant_filename_parsed(self):
         """Standard participant_N.csv filenames should be parsed correctly."""
@@ -668,7 +669,7 @@ class TestParticipantIdParsing:
 
 
 class TestFutureAnnotationsCompatibility:
-    """PR Comment: Type annotations should be compatible with Python 3.8+."""
+    """Type annotations should be compatible with Python 3.8+."""
 
     def test_module_uses_future_annotations(self):
         """data_preprocessing module should use 'from __future__ import annotations'
@@ -684,7 +685,7 @@ class TestFutureAnnotationsCompatibility:
 
 
 class TestCGMacrosValidateHandlesOSError:
-    """PR Comment (Copilot): validate() should handle OSError/PermissionError on os.listdir."""
+    """validate() should handle OSError/PermissionError on os.scandir."""
 
     def test_validate_unreadable_directory_raises_valueerror(self, monkeypatch):
         """validate() should raise ValueError (not OSError) when directory exists but is unreadable."""
@@ -764,19 +765,21 @@ class TestCGMacrosParseParticipantBroadExceptions:
 
             def mock_read_csv(filepath, *args, **kwargs):
                 if isinstance(filepath, str) and "participant_3.csv" in filepath:
+                    call_count["n"] += 1
                     raise OSError("Permission denied")
                 return original_read_csv(filepath, *args, **kwargs)
 
             monkeypatch.setattr(pd, "read_csv", mock_read_csv)
 
             result = loader.load()
+            assert call_count["n"] == 1
             # Should skip the unreadable file and load only participant_1
             assert len(result) == 1
             assert all(result['participant_id'] == 1)
 
 
 class TestParticipantFileRegexConstant:
-    """PR Comment (Gemini): Regex pattern should be a module-level constant."""
+    """Participant filename validation should use a module-level regex constant."""
 
     def test_participant_file_regex_constant_exists(self):
         """Module should define PARTICIPANT_FILE_REGEX as a constant."""
@@ -796,7 +799,7 @@ class TestParticipantFileRegexConstant:
 
 
 class TestUCILoadUnicodeDecodeError:
-    """PR Comment (Copilot): UCIDiabetesLoader.load() should catch UnicodeDecodeError
+    """UCIDiabetesLoader.load() should catch UnicodeDecodeError
     and wrap it as ValueError with the dataset path in the message."""
 
     def test_load_unicode_error_raises_valueerror(self):
@@ -831,8 +834,7 @@ class TestUCILoadUnicodeDecodeError:
 
 
 class TestUCILoadNoTypeError:
-    """PR Comment (Gemini): UCIDiabetesLoader.load() should NOT catch TypeError —
-    it's overly broad and can mask programming errors."""
+    """UCIDiabetesLoader.load() should NOT catch TypeError — it's overly broad and can mask programming errors."""
 
     def test_load_propagates_typeerror(self, monkeypatch):
         """Verify that TypeError raised during CSV loading is not caught by load()."""
@@ -855,8 +857,8 @@ class TestUCILoadNoTypeError:
 
 
 class TestCGMacrosValidateUnicodeDecodeError:
-    """PR Comment (Copilot): CGMacrosLoader.validate() should catch UnicodeDecodeError
-    when parsing participant files, so a bad-encoding file is skipped rather than crashing."""
+    """CGMacrosLoader.validate() should catch UnicodeDecodeError when parsing participant files,
+    so a bad-encoding file is skipped rather than crashing."""
 
     def test_validate_skips_unicode_error_participant_file(self):
         """validate() should skip participant files with invalid encoding, not crash."""
@@ -886,7 +888,7 @@ class TestCGMacrosValidateUnicodeDecodeError:
 
 
 class TestCGMacrosParseParticipantNoTypeError:
-    """PR Comment (Gemini): _parse_participant() should NOT catch TypeError."""
+    """_parse_participant() should NOT catch TypeError."""
 
     def test_parse_participant_typeerror_is_not_swallowed(self, monkeypatch):
         """TypeError raised by _parse_participant() should propagate out of load()."""
@@ -919,7 +921,7 @@ class TestCGMacrosParseParticipantNoTypeError:
 
 
 class TestPyprojectDependencies:
-    """PR Comment (Gemini): pyproject.toml should declare pandas>=2.0.0 as a dependency."""
+    """pyproject.toml should declare pandas>=2.0.0 as a dependency."""
 
     def test_pyproject_has_pandas_dependency(self):
         """pyproject.toml should list pandas>=2.0.0 in dependencies."""
@@ -936,7 +938,7 @@ class TestPyprojectDependencies:
 
 
 class TestSrcInitExists:
-    """PR Comment (Copilot): src/ needs __init__.py for setuptools package discovery."""
+    """src/ needs __init__.py for setuptools package discovery."""
 
     def test_src_init_py_exists(self):
         """src/__init__.py should exist for proper package discovery."""
@@ -948,7 +950,7 @@ class TestSrcInitExists:
 
 
 class TestConftestNoSysPathManipulation:
-    """PR Comment (Gemini): conftest.py should not manipulate sys.path."""
+    """conftest.py should not manipulate sys.path."""
 
     def test_conftest_does_not_manipulate_sys_path(self):
         """conftest.py should not contain sys.path.insert or sys.path manipulation."""
@@ -966,7 +968,7 @@ class TestConftestNoSysPathManipulation:
 
 
 class TestParseParticipantEmptyDataFrame:
-    """PR Comment (Copilot): _parse_participant() should treat header-only files as invalid."""
+    """_parse_participant() should treat header-only files as invalid."""
 
     def test_parse_participant_headers_only_returns_none(self):
         """A participant CSV with headers but no data rows should be treated as invalid."""
@@ -1028,7 +1030,7 @@ class TestParseParticipantEmptyDataFrame:
 
 
 class TestCGMacrosLoadEmptyCombinedDataFrame:
-    """PR Comment (Copilot): load() should guard against empty concatenated result."""
+    """load() should guard against empty concatenated result."""
 
     def test_load_raises_when_combined_df_is_empty(self):
         """load() should raise ValueError if concatenated result has zero rows."""
@@ -1047,7 +1049,7 @@ class TestCGMacrosLoadEmptyCombinedDataFrame:
 
 
 class TestGlucoseValidationNonNumericData:
-    """PR Comment (Gemini): _validate_glucose_range should handle non-numeric glucose columns
+    """_validate_glucose_range should handle non-numeric glucose columns
     using pd.to_numeric with errors='coerce' to avoid TypeError on corrupted data."""
 
     def test_track_a_non_numeric_glucose_does_not_raise(self, caplog):
@@ -1087,7 +1089,7 @@ class TestGlucoseValidationNonNumericData:
 
 
 class TestUCILoadInvalidTimestampWrapsValueError:
-    """PR Comment (Gemini): UCIDiabetesLoader.load() should catch ValueError from
+    """UCIDiabetesLoader.load() should catch ValueError from
     pd.to_datetime and wrap it with the dataset path for consistent error reporting."""
 
     def test_load_invalid_timestamp_raises_valueerror_with_path(self):
@@ -1131,7 +1133,7 @@ class TestUCILoadInvalidTimestampWrapsValueError:
 
 
 class TestCGMacrosDiscoverParticipantIds:
-    """PR Comment (Gemini): Participant ID discovery should be a shared helper method."""
+    """Participant ID discovery should be a shared helper method."""
 
     def test_discover_participant_ids_returns_sorted_unique_ids(self):
         """_discover_participant_ids() should return sorted unique participant ID→filename mapping."""
@@ -1199,7 +1201,7 @@ class TestCGMacrosDiscoverParticipantIds:
 
 
 class TestValidationLogConsistency:
-    """PR Comment (Copilot): Validation summary log should report counts consistently."""
+    """Validation summary log should report counts consistently."""
 
     def test_validate_log_reports_non_dropout_counts(self, caplog):
         """validate() log message should report valid count out of non-dropout total,
@@ -1242,7 +1244,7 @@ class TestValidationLogConsistency:
 
 
 class TestPyprojectPythonVersionFloor:
-    """PR Comment (Copilot): requires-python should match the actual supported floor
+    """requires-python should match the actual supported floor
     of the dependency ranges (pandas>=2.0.0 dropped Python 3.8)."""
 
     def test_requires_python_is_at_least_3_9(self):
@@ -1262,7 +1264,7 @@ class TestPyprojectPythonVersionFloor:
 
 
 class TestLeadingZeroParticipantFilenames:
-    """PR Comment (Copilot): _discover_participant_ids() should handle filenames with
+    """_discover_participant_ids() should handle filenames with
     leading zeros like participant_02.csv correctly."""
 
     def test_leading_zero_participant_file_is_loaded(self):
@@ -1327,7 +1329,7 @@ class TestLeadingZeroParticipantFilenames:
 
 
 class TestGlucoseValidationNonNumericWarning:
-    """PR Comment (Gemini): _validate_glucose_range should log a warning when
+    """_validate_glucose_range should log a warning when
     non-numeric values are encountered in glucose columns."""
 
     def test_non_numeric_glucose_values_trigger_warning(self, caplog):
@@ -1363,3 +1365,56 @@ class TestGlucoseValidationNonNumericWarning:
             assert not any("non-numeric" in msg.lower() for msg in warning_messages), (
                 "Should not warn about non-numeric values when all values are numeric"
             )
+
+
+class TestGlucoseValidationUpdatesDataFrame:
+    """_validate_glucose_range should update the DataFrame columns to numeric types
+    so downstream operations don't encounter string data."""
+
+    def test_validate_glucose_range_updates_df_columns_to_numeric(self):
+        """After validation, the DataFrame column should contain numeric values (not strings)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            df = pd.DataFrame({
+                'glucose': ['100.0', '200.0', 'bad', '300.0'],
+            })
+            loader._validate_glucose_range(df, ['glucose'])
+            # After validation, column should be numeric, not object/string
+            assert pd.api.types.is_numeric_dtype(df['glucose']), (
+                "_validate_glucose_range should update the DataFrame column to numeric dtype"
+            )
+            # 'bad' should have been coerced to NaN
+            assert df['glucose'].isna().sum() == 1
+            # Valid values should be preserved
+            assert df['glucose'].iloc[0] == 100.0
+            assert df['glucose'].iloc[1] == 200.0
+            assert df['glucose'].iloc[3] == 300.0
+
+    def test_validate_glucose_range_preserves_already_numeric(self):
+        """If column is already numeric, validation should not corrupt values."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            df = pd.DataFrame({
+                'glucose': [100.0, 200.0, 300.0],
+            })
+            loader._validate_glucose_range(df, ['glucose'])
+            assert pd.api.types.is_numeric_dtype(df['glucose'])
+            assert df['glucose'].tolist() == [100.0, 200.0, 300.0]
+
+
+class TestNullHandlerDeduplication:
+    """Logger NullHandler should not accumulate duplicates on module reload."""
+
+    def test_logger_has_at_most_one_null_handler(self):
+        """The module logger should have at most one NullHandler."""
+        import importlib
+        import src.data_preprocessing as mod
+        # Reload the module to simulate repeated import
+        importlib.reload(mod)
+        importlib.reload(mod)
+        logger = logging.getLogger('src.data_preprocessing')
+        null_handlers = [h for h in logger.handlers if isinstance(h, logging.NullHandler)]
+        assert len(null_handlers) <= 1, (
+            f"Logger should have at most 1 NullHandler, but has {len(null_handlers)}. "
+            "Guard addHandler with 'if not logger.handlers'."
+        )
