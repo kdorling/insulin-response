@@ -25,7 +25,7 @@ The system compares statistical and machine learning models using public dataset
 
 ### Prerequisites
 
-- Python 3.8 or higher
+- Python 3.9 or higher
 - pip package manager
 
 ### Installation
