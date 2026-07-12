@@ -8,11 +8,12 @@ Track A (UCI Diabetes dataset) and Track B (CGMacros dataset).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-import pandas as pd
-from typing import Optional
-import os
 import logging
+import os
 import re
+from typing import Optional
+
+import pandas as pd
 
 # Library-safe logging: let callers configure logging
 logger = logging.getLogger(__name__)
@@ -67,18 +68,23 @@ class DatasetLoader(ABC):
         for col in glucose_columns:
             if col not in df.columns:
                 continue
-            vals = pd.to_numeric(df[col], errors='coerce')
+
             ctx = f"{context}: " if context else ""
-            # Warn about non-numeric values that were coerced to NaN
-            n_non_numeric = vals.isna().sum() - df[col].isna().sum()
-            df[col] = vals  # Ensure numeric types for downstream tasks
-            if n_non_numeric > 0:
-                logger.warning(
-                    "%s%s non-numeric values in '%s' were coerced to NaN",
-                    ctx,
-                    n_non_numeric,
-                    col,
-                )
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                vals = pd.to_numeric(df[col], errors='coerce')
+                # Warn about non-numeric values that were coerced to NaN
+                n_non_numeric = vals.isna().sum() - df[col].isna().sum()
+                df[col] = vals  # Ensure numeric types for downstream tasks
+                if n_non_numeric > 0:
+                    logger.warning(
+                        "%s%s non-numeric values in '%s' were coerced to NaN",
+                        ctx,
+                        n_non_numeric,
+                        col,
+                    )
+            else:
+                vals = df[col]
+
             out_of_range = (vals < MIN_GLUCOSE) | (vals > MAX_GLUCOSE)
             n_out = out_of_range.sum()
             if n_out > 0:
