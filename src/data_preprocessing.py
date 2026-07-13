@@ -24,7 +24,7 @@ if not logger.handlers:
 MIN_GLUCOSE = 20  # mg/dL
 MAX_GLUCOSE = 600  # mg/dL
 DROPOUT_PARTICIPANTS = [24, 25, 37, 40]
-MAX_PARTICIPANT_ID = 45  # Inclusive upper bound for CGMacros participant IDs
+MAX_PARTICIPANT_ID = 49  # Inclusive upper bound for CGMacros participant IDs (originals 1-49; 24, 25, 37, 40 are dropouts)
 PARTICIPANT_FILE_REGEX = r"participant_(\d+)\.csv$"
 
 
@@ -278,12 +278,14 @@ class CGMacrosLoader(DatasetLoader):
             'health_group'
         ]
 
-        # Health group categorization based on CGMacros dataset
-        # 15 healthy, 16 pre-diabetic, 14 Type 2 diabetic
+        # Health group categorization based on CGMacros dataset. The released
+        # cohort uses original participant IDs 1-49 with 24, 25, 37, 40 as
+        # dropouts; after excluding those this yields 15 healthy, 16 pre-diabetic,
+        # 14 Type 2 diabetic.
         self.health_groups = {
-            'healthy': list(range(1, 16)),  # Participants 1-15
-            'pre-diabetic': list(range(16, 32)),  # Participants 16-31
-            't2d': list(range(32, MAX_PARTICIPANT_ID + 1))  # Participants 32-45
+            'healthy': list(range(1, 16)),  # IDs 1-15 -> 15 healthy
+            'pre-diabetic': list(range(16, 34)),  # IDs 16-33 minus dropouts 24, 25 -> 16
+            't2d': list(range(34, MAX_PARTICIPANT_ID + 1))  # IDs 34-49 minus dropouts 37, 40 -> 14
         }
 
     @property

@@ -1440,7 +1440,7 @@ class TestParticipantIdRangeFiltering:
             })
             # Valid participant within range
             valid_data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
-            # Participant ID above MAX_PARTICIPANT_ID (45)
+            # Participant ID above MAX_PARTICIPANT_ID
             valid_data.to_csv(os.path.join(cgmacros_dir, "participant_999.csv"), index=False)
 
             from src.data_preprocessing import MAX_PARTICIPANT_ID
