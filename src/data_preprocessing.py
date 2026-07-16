@@ -388,7 +388,7 @@ class CGMacrosLoader(DatasetLoader):
 
         # Verify at least one file is parseable with required columns
         valid_count = 0
-        for pid, fname in non_dropout.items():
+        for fname in non_dropout.values():
             filepath = os.path.join(self.dataset_dir, fname)
             try:
                 sample = pd.read_csv(filepath, nrows=1)

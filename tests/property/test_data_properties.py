@@ -145,7 +145,7 @@ def test_track_b_field_extraction(track_b_data_tuple, tmp_path):
         f"Row count mismatch. Expected: {len(track_b_data)}, Got: {len(result)}"
 
     assert (result['participant_id'] == participant_id).all(), \
-        f"Participant ID mismatch"
+        f"Participant ID mismatch. Expected: {participant_id}, Got: {result['participant_id'].unique()}"
 
 
 def test_track_a_load_raises_on_missing_file():
