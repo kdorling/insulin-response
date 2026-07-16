@@ -41,17 +41,26 @@ class DatasetLoader(ABC):
         self.data_dir = data_dir
         # data_dir is always developer-supplied, not user-facing input, so path
         # traversal validation is intentionally omitted here.
-        # Restrict permissions to 0o700 for health data privacy (POSIX only)
+        # Restrict permissions to 0o700 for health data privacy. Fail closed: if the
+        # directory cannot be locked down, refuse to use it rather than risk storing
+        # sensitive health data in a location whose access we could not secure.
         os.makedirs(data_dir, mode=0o700, exist_ok=True)
         if os.name == "posix":
             try:
                 os.chmod(data_dir, 0o700)
             except (PermissionError, OSError) as exc:
-                logger.warning(
-                    "Could not set permissions on data directory '%s' to 0o700: %s",
-                    data_dir,
-                    exc,
-                )
+                raise RuntimeError(
+                    f"Refusing to use '{data_dir}' for sensitive data: "
+                    "could not enforce 0o700 permissions"
+                ) from exc
+        else:
+            # os.chmod cannot set POSIX bits on non-POSIX platforms. Access must be
+            # restricted via a platform-appropriate mechanism (e.g. Windows ACLs)
+            # before storing sensitive data; until that is in place, fail closed.
+            raise RuntimeError(
+                f"Refusing to use '{data_dir}' for sensitive data: POSIX permissions "
+                "cannot be enforced on this platform; configure and verify ACLs explicitly"
+            )
 
     def _validate_and_clean_glucose(self, df: pd.DataFrame, glucose_columns: list[str],
                                     context: str = "") -> None:

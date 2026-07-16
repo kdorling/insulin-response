@@ -118,13 +118,30 @@ class TestDirectoryPermissions:
             mode = os.stat(data_dir).st_mode & 0o777
             assert mode == 0o700, f"Expected 0o700, got {oct(mode)}"
 
-    def test_loader_init_succeeds_on_any_platform(self):
-        """Loader initialization should not crash regardless of platform."""
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions not supported")
+    def test_loader_init_succeeds_when_permissions_enforceable(self):
+        """On POSIX, loader init succeeds when 0o700 can be enforced on the data dir."""
         with tempfile.TemporaryDirectory() as temp_dir:
             data_dir = os.path.join(temp_dir, "test_data")
             loader = UCIDiabetesLoader(data_dir=data_dir)
             assert os.path.isdir(data_dir)
             assert loader.data_dir == data_dir
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions not supported")
+    def test_init_fails_closed_when_chmod_fails(self, monkeypatch):
+        """If 0o700 cannot be enforced, init must fail closed rather than log-and-continue.
+
+        Sensitive health data must never be written to a directory whose access we
+        could not lock down (see defensive-coding 'File System Security').
+        """
+        def raise_permission_error(*args, **kwargs):
+            raise PermissionError("cannot enforce permissions")
+
+        monkeypatch.setattr(os, "chmod", raise_permission_error)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = os.path.join(temp_dir, "test_data")
+            with pytest.raises(RuntimeError, match="could not enforce 0o700"):
+                UCIDiabetesLoader(data_dir=data_dir)
 
 
 class TestExceptionHandling:
@@ -1244,22 +1261,21 @@ class TestValidationLogConsistency:
 
 
 class TestPyprojectPythonVersionFloor:
-    """requires-python should match the actual supported floor
-    of the dependency ranges (pandas>=2.0.0 dropped Python 3.8)."""
+    """requires-python should declare the project's supported Python floor (>=3.9)."""
 
     def test_requires_python_is_at_least_3_9(self):
-        """requires-python should be >=3.9 since pandas>=2.0.0 requires Python 3.9+."""
+        """requires-python should be >=3.9, the project's declared minimum interpreter."""
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         pyproject_path = os.path.join(project_root, "pyproject.toml")
         with open(pyproject_path, "r", encoding="utf-8") as f:
             content = f.read()
-        # Should NOT claim 3.8 support since pandas>=2.0.0 dropped it
+        # The project targets Python 3.9+; it should not advertise 3.8 support.
         assert '>=3.8' not in content, (
             "requires-python should not claim Python 3.8 support; "
-            "pandas>=2.0.0 requires Python 3.9+"
+            "the project's minimum supported interpreter is 3.9"
         )
         assert '>=3.9' in content, (
-            "requires-python should be >=3.9 to match pandas>=2.0.0 requirements"
+            "requires-python should declare a >=3.9 floor"
         )
 
 
