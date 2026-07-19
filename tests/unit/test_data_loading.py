@@ -12,17 +12,21 @@ Tests cover:
 
 import logging
 import os
+import re
+import sys
 import tempfile
 
 import pandas as pd
 import pytest
 
-from src.data_preprocessing import (
+from insulin_response.data_preprocessing import (
+    DatasetLoader,
     UCIDiabetesLoader,
     CGMacrosLoader,
     MIN_GLUCOSE,
     MAX_GLUCOSE,
     DROPOUT_PARTICIPANTS,
+    glucose_flag_column,
 )
 
 
@@ -57,7 +61,7 @@ class TestGlucoseRangeValidation:
 
             loader = UCIDiabetesLoader(data_dir=temp_dir)
             import logging
-            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
                 result = loader.load()
 
             # Should still return all rows (out-of-range values are flagged, not dropped)
@@ -89,7 +93,7 @@ class TestGlucoseRangeValidation:
 
             loader = CGMacrosLoader(data_dir=temp_dir)
             import logging
-            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
                 result = loader.load()
 
             assert len(result) == 3
@@ -201,7 +205,7 @@ class TestEmptyDatasetRejection:
                 f.write("pre_meal_glucose,post_meal_glucose,insulin_dose,meal_timestamp\n")
 
             loader = UCIDiabetesLoader(data_dir=temp_dir)
-            with pytest.raises(ValueError, match="[Ee]mpty"):
+            with pytest.raises(ValueError, match=r"[Ee]mpty"):
                 loader.load()
 
     def test_validate_headers_only_csv_raises_value_error(self):
@@ -212,7 +216,7 @@ class TestEmptyDatasetRejection:
                 f.write("pre_meal_glucose,post_meal_glucose,insulin_dose,meal_timestamp\n")
 
             loader = UCIDiabetesLoader(data_dir=temp_dir)
-            with pytest.raises(ValueError, match="[Ee]mpty"):
+            with pytest.raises(ValueError, match=r"[Ee]mpty"):
                 loader.validate()
 
 
@@ -230,7 +234,7 @@ class TestUCIValidateChecksColumns:
             data.to_csv(csv_path, index=False)
 
             loader = UCIDiabetesLoader(data_dir=temp_dir)
-            with pytest.raises(ValueError, match="[Mm]issing required columns"):
+            with pytest.raises(ValueError, match=r"[Mm]issing required columns"):
                 loader.validate()
 
     def test_validate_passes_with_correct_columns(self):
@@ -263,7 +267,7 @@ class TestCGMacrosValidateChecksParseability:
             data.to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
 
             loader = CGMacrosLoader(data_dir=temp_dir)
-            with pytest.raises(ValueError, match="[Nn]o .* valid|[Mm]issing|parseable|required columns"):
+            with pytest.raises(ValueError, match=r"[Nn]o .* valid|[Mm]issing|parseable|required columns"):
                 loader.validate()
 
     def test_validate_passes_with_valid_participant_file(self):
@@ -285,6 +289,70 @@ class TestCGMacrosValidateChecksParseability:
 
             loader = CGMacrosLoader(data_dir=temp_dir)
             assert loader.validate() is True
+
+    @staticmethod
+    def _participant_frame(timestamps):
+        """Build a required-column participant frame with the given timestamps."""
+        n = len(timestamps)
+        return pd.DataFrame({
+            'timestamp': timestamps,
+            'glucose': [100.0] * n,
+            'carbs': [30.0] * n,
+            'fat': [10.0] * n,
+            'protein': [20.0] * n,
+            'activity': [1.0] * n,
+            'heart_rate': [70.0] * n,
+        })
+
+    def test_validate_rejects_files_with_invalid_timestamps(self):
+        """A required-column CSV with unparseable timestamps is rejected by
+        _parse_participant(), so validate() must not report success on it."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            self._participant_frame(['not-a-timestamp', 'also-bad']).to_csv(
+                os.path.join(cgmacros_dir, "participant_1.csv"), index=False
+            )
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError):
+                loader.validate()
+
+    def test_load_rejects_files_with_invalid_timestamps(self):
+        """Paired with validate(): load() must also reject a dataset whose only
+        file has unparseable timestamps (no valid participant data)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            self._participant_frame(['not-a-timestamp', 'also-bad']).to_csv(
+                os.path.join(cgmacros_dir, "participant_1.csv"), index=False
+            )
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError):
+                loader.load()
+
+    def test_validate_and_load_agree_on_mixed_timestamp_validity(self):
+        """With one valid file and one invalid-timestamp file, validate() passes
+        and load() returns only the valid participant, keeping the two in sync."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            self._participant_frame(
+                ['2024-01-01 12:00:00', '2024-01-01 12:05:00']
+            ).to_csv(os.path.join(cgmacros_dir, "participant_1.csv"), index=False)
+            self._participant_frame(['bad', 'worse']).to_csv(
+                os.path.join(cgmacros_dir, "participant_2.csv"), index=False
+            )
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            assert loader.validate() is True
+
+            result = loader.load()
+            assert set(result['participant_id'].unique()) == {1}
 
 
 class TestCGMacrosErrorTypeConsistency:
@@ -462,7 +530,7 @@ class TestGlucoseValidationInBaseClass:
 
     def test_base_class_has_validate_and_clean_glucose_method(self):
         """DatasetLoader should expose a _validate_and_clean_glucose helper method."""
-        from src.data_preprocessing import DatasetLoader
+        from insulin_response.data_preprocessing import DatasetLoader
         assert hasattr(DatasetLoader, '_validate_and_clean_glucose'), (
             "DatasetLoader base class should have a _validate_and_clean_glucose method"
         )
@@ -480,7 +548,7 @@ class TestGlucoseValidationInBaseClass:
 
             loader = UCIDiabetesLoader(data_dir=temp_dir)
             import logging
-            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
                 result = loader.load()
 
             assert len(result) == 2
@@ -506,7 +574,7 @@ class TestGlucoseValidationInBaseClass:
 
             loader = CGMacrosLoader(data_dir=temp_dir)
             import logging
-            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
                 result = loader.load()
 
             assert len(result) == 2
@@ -688,16 +756,14 @@ class TestParticipantIdParsing:
 class TestFutureAnnotationsCompatibility:
     """Type annotations should use modern syntax compatible with Python 3.9+."""
 
-    def test_module_uses_future_annotations(self):
-        """data_preprocessing module should use 'from __future__ import annotations'
-        so that list[str] annotations work without runtime evaluation."""
-        import importlib
-        source = importlib.util.find_spec('src.data_preprocessing')
-        assert source is not None
-        with open(source.origin, 'r') as f:
-            content = f.read()
-        assert 'from __future__ import annotations' in content, (
-            "Module should use 'from __future__ import annotations' for deferred annotation evaluation"
+    def test_annotations_are_deferred(self):
+        """Annotations should be evaluated lazily, so builtin generics like list[str]
+        work on Python 3.9. Asserted behaviourally rather than by grepping the source,
+        so the test survives refactors, vendoring, and packaging changes."""
+        annotations = DatasetLoader._validate_and_clean_glucose.__annotations__
+        assert annotations['glucose_columns'] == 'list[str]', (
+            "Annotations should be stored as strings (deferred evaluation); "
+            f"got {annotations['glucose_columns']!r}"
         )
 
 
@@ -800,7 +866,7 @@ class TestParticipantFileRegexConstant:
 
     def test_participant_file_regex_constant_exists(self):
         """Module should define PARTICIPANT_FILE_REGEX as a constant."""
-        from src import data_preprocessing
+        from insulin_response import data_preprocessing
         assert hasattr(data_preprocessing, 'PARTICIPANT_FILE_REGEX'), (
             "Module should define PARTICIPANT_FILE_REGEX constant"
         )
@@ -808,7 +874,7 @@ class TestParticipantFileRegexConstant:
     def test_participant_file_regex_matches_valid_filenames(self):
         """The regex constant should match valid participant filenames."""
         import re
-        from src.data_preprocessing import PARTICIPANT_FILE_REGEX
+        from insulin_response.data_preprocessing import PARTICIPANT_FILE_REGEX
         assert re.fullmatch(PARTICIPANT_FILE_REGEX, "participant_1.csv")
         assert re.fullmatch(PARTICIPANT_FILE_REGEX, "participant_42.csv")
         assert not re.fullmatch(PARTICIPANT_FILE_REGEX, "participant_backup.csv")
@@ -941,28 +1007,43 @@ class TestPyprojectDependencies:
     """pyproject.toml should declare pandas>=2.0.0 as a dependency."""
 
     def test_pyproject_has_pandas_dependency(self):
-        """pyproject.toml should list pandas>=2.0.0 in dependencies."""
+        """pyproject.toml should declare pandas>=2.0.0 in [project.dependencies]."""
+        if sys.version_info >= (3, 11):
+            import tomllib
+        else:
+            import tomli as tomllib
+
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         pyproject_path = os.path.join(project_root, "pyproject.toml")
-        with open(pyproject_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        assert (
-            '"pandas>=2.0.0"' in content
-            or "'pandas>=2.0.0'" in content
-            or '"pandas"' in content
-            or "'pandas'" in content
-        ), "pyproject.toml should declare pandas as a project dependency"
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+
+        dependencies = data.get("project", {}).get("dependencies", [])
+        assert "pandas>=2.0.0" in dependencies, (
+            "pyproject.toml [project.dependencies] should pin pandas>=2.0.0, "
+            f"got: {dependencies}"
+        )
 
 
-class TestSrcInitExists:
-    """src/ needs __init__.py for setuptools package discovery."""
+class TestSrcLayoutPackaging:
+    """The project uses a src-layout: the package lives in src/insulin_response/,
+    and src/ itself must NOT be a package (no src/__init__.py)."""
 
-    def test_src_init_py_exists(self):
-        """src/__init__.py should exist for proper package discovery."""
+    def test_package_init_py_exists(self):
+        """src/insulin_response/__init__.py should exist for package discovery."""
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        init_path = os.path.join(project_root, "src", "__init__.py")
+        init_path = os.path.join(project_root, "src", "insulin_response", "__init__.py")
         assert os.path.exists(init_path), (
-            "src/__init__.py must exist for setuptools to discover the package"
+            "src/insulin_response/__init__.py must exist for setuptools to discover the package"
+        )
+
+    def test_src_is_not_a_package(self):
+        """src/ is a container directory in a src-layout, not a package itself."""
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        src_init = os.path.join(project_root, "src", "__init__.py")
+        assert not os.path.exists(src_init), (
+            "src/__init__.py must NOT exist in a src-layout; src/ is a container, "
+            "not an importable package"
         )
 
 
@@ -1042,7 +1123,7 @@ class TestParseParticipantEmptyDataFrame:
                     f.write("timestamp,glucose,carbs,fat,protein,activity,heart_rate\n")
 
             loader = CGMacrosLoader(data_dir=temp_dir)
-            with pytest.raises(ValueError, match="No valid participant data"):
+            with pytest.raises(ValueError, match="No parseable participant data"):
                 loader.load()
 
 
@@ -1056,7 +1137,7 @@ class TestCGMacrosLoadEmptyCombinedDataFrame:
             os.makedirs(cgmacros_dir)
 
             # Write a header-only file — _parse_participant returns None for this
-            # so all_data will be empty and we get "No valid participant data"
+            # so all_data will be empty and we get "No parseable participant data"
             with open(os.path.join(cgmacros_dir, "participant_1.csv"), "w") as f:
                 f.write("timestamp,glucose,carbs,fat,protein,activity,heart_rate\n")
 
@@ -1095,7 +1176,7 @@ class TestGlucoseValidationNonNumericData:
                 'glucose': ['bad', '100.0', 'NaN', '700.0'],
             })
             # Should not raise — non-numeric values are coerced to NaN
-            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
                 loader._validate_and_clean_glucose(df, ['glucose'])
 
             # Should still detect the out-of-range value (700.0 > MAX_GLUCOSE)
@@ -1243,7 +1324,7 @@ class TestValidationLogConsistency:
 
             loader = CGMacrosLoader(data_dir=temp_dir)
             import logging
-            with caplog.at_level(logging.INFO, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.INFO, logger="insulin_response.data_preprocessing"):
                 loader.validate()
 
             # The log should say "1 valid non-dropout ... out of 1 total"
@@ -1265,17 +1346,26 @@ class TestPyprojectPythonVersionFloor:
 
     def test_requires_python_is_at_least_3_9(self):
         """requires-python should be >=3.9, the project's declared minimum interpreter."""
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # Python < 3.11
+            import tomli as tomllib
+
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         pyproject_path = os.path.join(project_root, "pyproject.toml")
-        with open(pyproject_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        # The project targets Python 3.9+; it should not advertise 3.8 support.
-        assert '>=3.8' not in content, (
-            "requires-python should not claim Python 3.8 support; "
-            "the project's minimum supported interpreter is 3.9"
+        with open(pyproject_path, "rb") as f:
+            pyproject = tomllib.load(f)
+
+        # Inspect the project.requires-python field directly rather than searching
+        # the raw file text, so unrelated version strings (dependency pins, tool
+        # config) elsewhere in pyproject.toml can't satisfy or break the assertion.
+        requires_python = pyproject["project"]["requires-python"]
+        assert ">=3.9" in requires_python, (
+            f"requires-python should declare a >=3.9 floor (found: {requires_python!r})"
         )
-        assert '>=3.9' in content, (
-            "requires-python should declare a >=3.9 floor"
+        assert ">=3.8" not in requires_python, (
+            "requires-python should not claim Python 3.8 support; the project's "
+            f"minimum supported interpreter is 3.9 (found: {requires_python!r})"
         )
 
 
@@ -1335,13 +1425,84 @@ class TestLeadingZeroParticipantFilenames:
             data_leading_zero.to_csv(os.path.join(cgmacros_dir, "participant_02.csv"), index=False)
 
             loader = CGMacrosLoader(data_dir=temp_dir)
-            # Both map to pid=2, but _discover_participant_ids deduplicates.
-            # The canonical filename (participant_2.csv) should be used for loading.
+            # Both map to pid=2, but _discover_participant_ids deduplicates and
+            # deterministically prefers the canonical participant_2.csv filename
+            # regardless of directory iteration order.
             ids = loader._discover_participant_ids()
             assert 2 in ids
-            # load() should not crash
+            assert ids[2] == "participant_2.csv"
+
             result = loader.load()
             assert all(result['participant_id'] == 2)
+            # The canonical file's data (glucose 100.0) must be loaded, and the
+            # leading-zero file's distinct data (glucose 200.0) must be excluded.
+            assert len(result) == 1
+            assert result['glucose'].iloc[0] == 100.0
+            assert 200.0 not in result['glucose'].values
+
+    def test_ambiguous_non_canonical_duplicates_raise(self):
+        """Two distinct non-canonical filenames mapping to the same ID should be
+        rejected rather than silently resolved by directory iteration order."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+
+            data = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=1, freq='5min'),
+                'glucose': [100.0],
+                'carbs': [30.0],
+                'fat': [10.0],
+                'protein': [20.0],
+                'activity': [1.0],
+                'heart_rate': [70.0],
+            })
+            # Both participant_02.csv and participant_002.csv map to pid=2, and
+            # neither is the canonical participant_2.csv form -> ambiguous.
+            data.to_csv(os.path.join(cgmacros_dir, "participant_02.csv"), index=False)
+            data.to_csv(os.path.join(cgmacros_dir, "participant_002.csv"), index=False)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with pytest.raises(ValueError, match=r"[Aa]mbiguous participant files"):
+                loader._discover_participant_ids()
+
+    def test_canonical_resolution_independent_of_scan_order(self, monkeypatch):
+        """When the canonical participant_2.csv coexists with participant_02.csv
+        and participant_002.csv aliases, discovery must resolve to the canonical
+        file regardless of the order os.scandir() yields the entries."""
+
+        class _FakeEntry:
+            def __init__(self, name):
+                self.name = name
+
+            def is_file(self):
+                return True
+
+        class _FakeScandir:
+            def __init__(self, names):
+                self._names = names
+
+            def __enter__(self):
+                return iter(_FakeEntry(n) for n in self._names)
+
+            def __exit__(self, *exc):
+                return False
+
+        scan_orders = [
+            ["participant_2.csv", "participant_02.csv", "participant_002.csv"],
+            ["participant_002.csv", "participant_02.csv", "participant_2.csv"],
+        ]
+        for order in scan_orders:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                loader = CGMacrosLoader(data_dir=temp_dir)
+                monkeypatch.setattr(
+                    os, "scandir", lambda path, names=order: _FakeScandir(names)
+                )
+                ids = loader._discover_participant_ids()
+                assert ids == {2: "participant_2.csv"}, (
+                    f"Scan order {order} should resolve to the canonical filename, "
+                    f"got {ids}"
+                )
+                monkeypatch.undo()
 
 
 class TestGlucoseValidationNonNumericWarning:
@@ -1357,7 +1518,7 @@ class TestGlucoseValidationNonNumericWarning:
             df = pd.DataFrame({
                 'glucose': ['bad_value', 'also_bad', '100.0'],
             })
-            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
                 loader._validate_and_clean_glucose(df, ['glucose'])
 
             warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
@@ -1374,7 +1535,7 @@ class TestGlucoseValidationNonNumericWarning:
             df = pd.DataFrame({
                 'glucose': [100.0, 200.0, 300.0],
             })
-            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
                 loader._validate_and_clean_glucose(df, ['glucose'])
 
             warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
@@ -1424,11 +1585,11 @@ class TestNullHandlerDeduplication:
     def test_logger_has_at_most_one_null_handler(self):
         """The module logger should have at most one NullHandler."""
         import importlib
-        import src.data_preprocessing as mod
+        import insulin_response.data_preprocessing as mod
         # Reload the module to simulate repeated import
         importlib.reload(mod)
         importlib.reload(mod)
-        logger = logging.getLogger('src.data_preprocessing')
+        logger = logging.getLogger('insulin_response.data_preprocessing')
         null_handlers = [h for h in logger.handlers if isinstance(h, logging.NullHandler)]
         assert len(null_handlers) <= 1, (
             f"Logger should have at most 1 NullHandler, but has {len(null_handlers)}. "
@@ -1459,7 +1620,7 @@ class TestParticipantIdRangeFiltering:
             # Participant ID above MAX_PARTICIPANT_ID
             valid_data.to_csv(os.path.join(cgmacros_dir, "participant_999.csv"), index=False)
 
-            from src.data_preprocessing import MAX_PARTICIPANT_ID
+            from insulin_response.data_preprocessing import MAX_PARTICIPANT_ID
             loader = CGMacrosLoader(data_dir=temp_dir)
             ids = loader._discover_participant_ids()
             assert 999 not in ids, (
@@ -1510,7 +1671,7 @@ class TestParticipantIdRangeFiltering:
             valid_data.to_csv(os.path.join(cgmacros_dir, "participant_100.csv"), index=False)
 
             loader = CGMacrosLoader(data_dir=temp_dir)
-            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
                 loader._discover_participant_ids()
 
             warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
@@ -1546,25 +1707,40 @@ class TestParticipantIdRangeFiltering:
 class TestReadmePythonVersion:
     """README.md should state the correct minimum Python version."""
 
-    def test_readme_does_not_claim_python_38(self):
-        """README should not claim Python 3.8 support since requires-python is >=3.9."""
+    @staticmethod
+    def _python_prereq_line():
+        """Return the README line declaring the Python version prerequisite.
+
+        Targets the specific declaration (e.g. ``- Python 3.9 or higher``)
+        rather than scanning the whole file, so unrelated version strings
+        (dependency pins, changelog entries) cannot satisfy or break the
+        assertions.
+        """
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         readme_path = os.path.join(project_root, "README.md")
         with open(readme_path, "r", encoding="utf-8") as f:
             content = f.read()
-        assert "3.8" not in content, (
-            "README should not reference Python 3.8; "
-            "pyproject.toml requires-python is >=3.9"
+        for line in content.splitlines():
+            if re.search(r"\bPython\s+3\.\d+", line):
+                return line
+        return None
+
+    def test_readme_does_not_claim_python_38(self):
+        """The Python prerequisite declaration should not claim 3.8 support."""
+        prereq_line = self._python_prereq_line()
+        assert prereq_line is not None, "README should declare a Python version prerequisite"
+        assert "3.8" not in prereq_line, (
+            "README's Python prerequisite should not reference Python 3.8; "
+            f"pyproject.toml requires-python is >=3.9 (found: {prereq_line!r})"
         )
 
     def test_readme_states_python_39_or_higher(self):
-        """README should state Python 3.9 or higher as a prerequisite."""
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        readme_path = os.path.join(project_root, "README.md")
-        with open(readme_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        assert "3.9" in content, (
-            "README should mention Python 3.9 as the minimum version"
+        """The Python prerequisite declaration should state Python 3.9."""
+        prereq_line = self._python_prereq_line()
+        assert prereq_line is not None, "README should declare a Python version prerequisite"
+        assert "3.9" in prereq_line, (
+            "README's Python prerequisite should state Python 3.9 as the minimum "
+            f"version (found: {prereq_line!r})"
         )
 
 
@@ -1574,7 +1750,7 @@ class TestValidateAndCleanGlucoseMethodName:
 
     def test_method_is_named_validate_and_clean_glucose(self):
         """DatasetLoader should have _validate_and_clean_glucose, not _validate_glucose_range."""
-        from src.data_preprocessing import DatasetLoader
+        from insulin_response.data_preprocessing import DatasetLoader
         assert hasattr(DatasetLoader, '_validate_and_clean_glucose'), (
             "Method should be renamed from _validate_glucose_range to _validate_and_clean_glucose"
         )
@@ -1586,10 +1762,219 @@ class TestValidateAndCleanGlucoseMethodName:
             df = pd.DataFrame({
                 'glucose': ['bad', '100.0', '700.0'],
             })
-            with caplog.at_level(logging.WARNING, logger="src.data_preprocessing"):
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
                 loader._validate_and_clean_glucose(df, ['glucose'])
 
             assert pd.api.types.is_numeric_dtype(df['glucose'])
             warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
             assert any("non-numeric" in msg.lower() for msg in warning_messages)
             assert any("out of range" in msg.lower() for msg in warning_messages)
+
+
+def _write_track_a_csv(path, timestamps=None, rows=2):
+    """Write a minimal valid Track A CSV, optionally overriding meal_timestamp values."""
+    if timestamps is None:
+        timestamps = pd.date_range('2024-01-01', periods=rows, freq='h').astype(str)
+    df = pd.DataFrame({
+        'pre_meal_glucose': [100.0] * len(timestamps),
+        'post_meal_glucose': [140.0] * len(timestamps),
+        'insulin_dose': [5.0] * len(timestamps),
+        'meal_timestamp': list(timestamps),
+    })
+    df.to_csv(path, index=False)
+    return df
+
+
+def _write_participant_csv(path, timestamps, glucose=None):
+    """Write a minimal valid CGMacros participant CSV."""
+    n = len(timestamps)
+    pd.DataFrame({
+        'timestamp': list(timestamps),
+        'glucose': glucose if glucose is not None else [100.0] * n,
+        'carbs': [30.0] * n,
+        'fat': [10.0] * n,
+        'protein': [20.0] * n,
+        'activity': [1.0] * n,
+        'heart_rate': [70.0] * n,
+    }).to_csv(path, index=False)
+
+
+class TestDiscoverParticipantIdsPreservesFileNotFoundError:
+    """_discover_participant_ids() should not translate a missing directory into ValueError."""
+
+    def test_missing_directory_raises_filenotfounderror(self):
+        """FileNotFoundError must survive the generic OSError branch (Error Type Consistency)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            # Directory is absent, so os.scandir raises FileNotFoundError.
+            assert not os.path.exists(loader.dataset_dir)
+
+            with pytest.raises(FileNotFoundError):
+                loader._discover_participant_ids()
+
+    def test_unreadable_directory_still_raises_valueerror(self, monkeypatch):
+        """Other OSError cases (e.g. PermissionError) are still mapped to ValueError."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+            loader = CGMacrosLoader(data_dir=temp_dir)
+
+            original_scandir = os.scandir
+
+            def deny(path):
+                # Only deny the dataset directory; other paths (e.g. tempfile
+                # cleanup) must keep working.
+                if path == cgmacros_dir:
+                    raise PermissionError("Permission denied")
+                return original_scandir(path)
+
+            monkeypatch.setattr(os, 'scandir', deny)
+            with pytest.raises(ValueError, match="Cannot access dataset directory"):
+                loader._discover_participant_ids()
+
+
+class TestTrackAValidateChecksTimestamps:
+    """validate() should reject timestamps that load() would fail on."""
+
+    def test_validate_rejects_unparseable_timestamp(self):
+        """A CSV with a non-date meal_timestamp should fail preflight, not just load()."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            os.makedirs(os.path.dirname(loader.dataset_path), exist_ok=True)
+            _write_track_a_csv(loader.dataset_path, timestamps=['not-a-date', 'also-bad'])
+
+            with pytest.raises(ValueError, match="Invalid timestamp format"):
+                loader.validate()
+
+    def test_validate_accepts_iso_timestamps(self):
+        """Well-formed ISO8601 timestamps should still pass validation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            os.makedirs(os.path.dirname(loader.dataset_path), exist_ok=True)
+            _write_track_a_csv(loader.dataset_path)
+
+            assert loader.validate() is True
+
+    def test_missing_file_raises_filenotfounderror_not_valueerror(self):
+        """validate() should preserve FileNotFoundError for an absent dataset file."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            with pytest.raises(FileNotFoundError):
+                loader.validate()
+
+
+class TestTrackALoadNarrowsValueError:
+    """load() should not swallow unrelated ValueErrors in its broad handler."""
+
+    def test_missing_columns_error_is_not_rewrapped(self):
+        """A missing-column ValueError should propagate with its own message intact."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            os.makedirs(os.path.dirname(loader.dataset_path), exist_ok=True)
+            pd.DataFrame({'pre_meal_glucose': [100.0]}).to_csv(loader.dataset_path, index=False)
+
+            with pytest.raises(ValueError, match="Missing required columns") as exc_info:
+                loader.load()
+            assert "Error loading dataset" not in str(exc_info.value)
+
+    def test_bad_timestamp_reports_timestamp_error(self):
+        """A timestamp parse failure should be reported as such."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            os.makedirs(os.path.dirname(loader.dataset_path), exist_ok=True)
+            _write_track_a_csv(loader.dataset_path, timestamps=['not-a-date', 'also-bad'])
+
+            with pytest.raises(ValueError, match="Invalid timestamp format"):
+                loader.load()
+
+
+class TestParticipantTimestampOrdering:
+    """Each participant's rows should be returned in chronological order."""
+
+    def test_out_of_order_rows_are_sorted(self, caplog):
+        """A participant file written out of order should load sorted, with a warning."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+            shuffled = ['2024-01-01 02:00:00', '2024-01-01 00:00:00', '2024-01-01 01:00:00']
+            _write_participant_csv(
+                os.path.join(cgmacros_dir, 'participant_1.csv'), shuffled
+            )
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
+                result = loader.load()
+
+            assert result['timestamp'].is_monotonic_increasing
+            assert any("chronological order" in r.message for r in caplog.records)
+
+    def test_already_ordered_rows_do_not_warn(self, caplog):
+        """An in-order file should not emit a sorting warning."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+            ordered = pd.date_range('2024-01-01', periods=3, freq='h').astype(str)
+            _write_participant_csv(os.path.join(cgmacros_dir, 'participant_1.csv'), ordered)
+
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            with caplog.at_level(logging.WARNING, logger="insulin_response.data_preprocessing"):
+                result = loader.load()
+
+            assert result['timestamp'].is_monotonic_increasing
+            assert not any("chronological order" in r.message for r in caplog.records)
+
+
+class TestGlucoseOutOfRangeFlag:
+    """Out-of-range glucose readings should be flagged per row, not just logged."""
+
+    def test_track_b_flags_out_of_range_rows(self):
+        """CGMacros load() should mark rows outside [MIN_GLUCOSE, MAX_GLUCOSE]."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cgmacros_dir = os.path.join(temp_dir, 'cgmacros')
+            os.makedirs(cgmacros_dir)
+            timestamps = pd.date_range('2024-01-01', periods=3, freq='h').astype(str)
+            _write_participant_csv(
+                os.path.join(cgmacros_dir, 'participant_1.csv'),
+                timestamps,
+                glucose=[MIN_GLUCOSE - 1, 100.0, MAX_GLUCOSE + 1],
+            )
+
+            result = CGMacrosLoader(data_dir=temp_dir).load()
+
+            flag = glucose_flag_column('glucose')
+            assert flag in result.columns
+            assert list(result[flag]) == [True, False, True]
+
+    def test_track_a_flags_both_glucose_columns(self):
+        """Track A load() should flag pre- and post-meal glucose independently."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            os.makedirs(os.path.dirname(loader.dataset_path), exist_ok=True)
+            pd.DataFrame({
+                'pre_meal_glucose': [100.0, MAX_GLUCOSE + 1],
+                'post_meal_glucose': [MIN_GLUCOSE - 1, 140.0],
+                'insulin_dose': [5.0, 5.0],
+                'meal_timestamp': list(pd.date_range('2024-01-01', periods=2, freq='h').astype(str)),
+            }).to_csv(loader.dataset_path, index=False)
+
+            result = loader.load()
+
+            assert list(result[glucose_flag_column('pre_meal_glucose')]) == [False, True]
+            assert list(result[glucose_flag_column('post_meal_glucose')]) == [True, False]
+
+    def test_missing_values_are_not_flagged(self):
+        """NaN glucose is absent, not out of range, so it should flag False."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            df = pd.DataFrame({'glucose': [float('nan'), 100.0, 700.0]})
+            loader._validate_and_clean_glucose(df, ['glucose'])
+
+            assert list(df[glucose_flag_column('glucose')]) == [False, False, True]
+
+    def test_flag_columns_are_not_required_of_source_files(self):
+        """Derived flags are outputs only; source CSVs must not need to supply them."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            assert glucose_flag_column('glucose') not in loader.required_columns
+            assert glucose_flag_column('glucose') not in loader._expected_file_columns
+            assert glucose_flag_column('glucose') in loader.output_columns

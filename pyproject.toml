@@ -14,5 +14,9 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest", "hypothesis", "tomli; python_version < '3.11'"]
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
-include = ["src*"]
+where = ["src"]
+include = ["insulin_response*"]

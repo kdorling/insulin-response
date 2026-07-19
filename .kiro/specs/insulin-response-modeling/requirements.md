@@ -59,8 +59,9 @@ This document specifies the requirements for an insulin response modeling system
 2. WHEN visualizing glucose distributions, THE System SHALL create distribution plots and box plots segmented by meal type and macronutrient composition
 3. WHEN analyzing feature relationships, THE System SHALL generate a correlation heatmap for all numeric features
 4. WHEN auditing data quality, THE System SHALL identify and report missing data percentages for each feature
-5. WHEN detecting outliers, THE System SHALL flag glucose measurements outside physiologically plausible ranges (20-600 mg/dL)
+5. WHEN detecting outliers, THE System SHALL flag glucose measurements outside physiologically plausible ranges (20-600 mg/dL) by setting a boolean indicator column, retaining the original value rather than dropping or altering the row
 6. WHEN visualizing Track_B data, THE System SHALL create overlay plots of CGM glucose curves for multiple participants
+7. WHEN detecting outliers, IF a glucose value is missing (NaN), THEN THE System SHALL NOT flag it as an outlier; missing values are reported by the missing-data audit in 3.4 instead
 
 ### Requirement 4: Statistical Model Implementation
 
@@ -130,8 +131,8 @@ This document specifies the requirements for an insulin response modeling system
 
 #### Acceptance Criteria
 
-1. THE System SHALL organize code into modules: data_preprocessing.py, statistical_models.py, ml_models.py, and evaluate.py
-2. THE System SHALL include a requirements file specifying all dependencies: pandas, numpy, scikit-learn, statsmodels, matplotlib, seaborn, xgboost, lightgbm, torch, jupyter
+1. THE System SHALL organize code as an installable `insulin_response` package under `src/`, containing the modules: data_preprocessing.py, statistical_models.py, ml_models.py, and evaluate.py
+2. THE System SHALL include a requirements file specifying all dependencies: pandas, numpy, scikit-learn, statsmodels, matplotlib, seaborn, xgboost, lightgbm, torch, jupyter, pytest, hypothesis
 3. THE System SHALL include a notebooks directory containing EDA.ipynb for exploratory analysis
 4. THE System SHALL include a README file documenting setup instructions and usage examples
 5. WHEN dependencies are installed, THE System SHALL verify that all required packages are available and compatible

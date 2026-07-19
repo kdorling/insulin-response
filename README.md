@@ -27,6 +27,13 @@ The system compares statistical and machine learning models using public dataset
 
 - Python 3.9 or higher
 - pip package manager
+- **A POSIX platform (Linux or macOS) for data loading.** The dataset loaders store
+  sensitive health data and enforce `0o700` permissions on the data directory. Because
+  those permission bits cannot be set on non-POSIX platforms, `DatasetLoader` fails
+  closed and raises `RuntimeError` on Windows rather than writing health data to a
+  directory whose access it could not restrict. Windows users should run the data
+  loading steps under WSL. The setup steps below still apply to Windows for the rest
+  of the project.
 
 ### Installation
 
@@ -55,11 +62,12 @@ python verify_dependencies.py
 ## Project Structure
 
 ```
-src/                    # Core implementation modules
-  data_preprocessing.py # Data loading and feature engineering
-  statistical_models.py # Baseline statistical models
-  ml_models.py         # Machine learning models
-  evaluate.py          # Model evaluation and metrics
+src/                        # Container directory (src-layout; not a package)
+  insulin_response/         # Core implementation package
+    data_preprocessing.py   # Data loading and feature engineering
+    statistical_models.py   # Baseline statistical models
+    ml_models.py            # Machine learning models
+    evaluate.py             # Model evaluation and metrics
 tests/
   unit/               # Unit tests for specific scenarios
   property/           # Property-based tests for correctness
@@ -75,7 +83,7 @@ outputs/             # Visualizations and results
 ### Data Processing
 
 ```python
-from src.data_preprocessing import UCIDiabetesLoader, CGMacrosLoader, FeatureEngineer
+from insulin_response.data_preprocessing import UCIDiabetesLoader, CGMacrosLoader
 
 # Load Track A data
 track_a_loader = UCIDiabetesLoader()
@@ -85,16 +93,17 @@ track_a_data = track_a_loader.load()
 track_b_loader = CGMacrosLoader()
 track_b_data = track_b_loader.load()
 
-# Engineer features
-engineer = FeatureEngineer()
-track_a_features = engineer.calculate_time_since_meal(track_a_data)
+# Feature engineering (planned — not yet implemented)
+# from insulin_response.data_preprocessing import FeatureEngineer
+# engineer = FeatureEngineer()
+# track_a_features = engineer.calculate_time_since_meal(track_a_data)
 ```
 
 ### Model Training
 
 ```python
-from src.statistical_models import LinearRegressionModel
-from src.ml_models import RandomForestModel
+from insulin_response.statistical_models import LinearRegressionModel
+from insulin_response.ml_models import RandomForestModel
 
 # Train statistical model
 lr_model = LinearRegressionModel()
@@ -110,7 +119,7 @@ predictions = rf_model.predict(X_test)
 ### Model Evaluation
 
 ```python
-from src.evaluate import ModelEvaluator
+from insulin_response.evaluate import ModelEvaluator
 
 evaluator = ModelEvaluator()
 results = evaluator.cross_validate_track_a(rf_model, X, y, k=5)
@@ -122,7 +131,7 @@ print(f"R²: {results['r2']:.3f}")
 ### Hyperparameter Optimization
 
 ```python
-from src.evaluate import HyperparameterTuner
+from insulin_response.evaluate import HyperparameterTuner
 
 tuner = HyperparameterTuner()
 param_grid = {
@@ -136,7 +145,7 @@ print(f"Best parameters: {best_params}")
 ### Visualization
 
 ```python
-from src.evaluate import Visualizer
+from insulin_response.evaluate import Visualizer
 
 viz = Visualizer()
 viz.plot_metric_comparison(results, 'outputs/metrics_comparison.png')
@@ -165,7 +174,7 @@ pytest tests/integration/
 
 Run with coverage:
 ```bash
-pytest --cov=src --cov-report=html
+pytest --cov=insulin_response --cov-report=html
 ```
 
 ## Exploratory Data Analysis

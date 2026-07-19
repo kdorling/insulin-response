@@ -28,6 +28,16 @@ MAX_PARTICIPANT_ID = 49  # Inclusive upper bound for CGMacros participant IDs (o
 PARTICIPANT_FILE_REGEX = r"participant_(\d+)\.csv$"
 
 
+def glucose_flag_column(column: str) -> str:
+    """
+    Name of the derived per-row out-of-range flag for a glucose column.
+
+    These flags are derived outputs, not part of the input contract: loaders add
+    them to the returned DataFrame but never require them in source files.
+    """
+    return f"{column}_out_of_range"
+
+
 class DatasetLoader(ABC):
     """Base class for dataset loading with abstract methods."""
 
@@ -62,12 +72,28 @@ class DatasetLoader(ABC):
                 "cannot be enforced on this platform; configure and verify ACLs explicitly"
             )
 
+    @property
+    def output_columns(self) -> list[str]:
+        """
+        Columns returned by load(): the required columns plus the derived
+        out-of-range flag for each glucose column. `required_columns` remains the
+        input contract, so derived flags are never demanded of source files.
+        """
+        return self.required_columns + [
+            glucose_flag_column(c) for c in self.glucose_columns
+        ]
+
     def _validate_and_clean_glucose(self, df: pd.DataFrame, glucose_columns: list[str],
                                     context: str = "") -> None:
         """
         Validate and clean glucose columns: coerce to numeric types, log warnings
         for out-of-range values. Non-numeric values are coerced to NaN and
         logged as a data quality warning.
+
+        For each glucose column present, adds a boolean flag column (see
+        `glucose_flag_column`) marking rows outside the physiological range, so
+        downstream consumers can exclude them without re-implementing the check.
+        Missing values (NaN) are flagged False — absent, not out of range.
 
         Args:
             df: DataFrame containing glucose columns to validate
@@ -94,7 +120,10 @@ class DatasetLoader(ABC):
             else:
                 vals = df[col]
 
+            # NaN compares False on both sides, so missing values are not flagged.
             out_of_range = (vals < MIN_GLUCOSE) | (vals > MAX_GLUCOSE)
+            df[glucose_flag_column(col)] = out_of_range
+
             n_out = out_of_range.sum()
             if n_out > 0:
                 logger.warning(
@@ -165,6 +194,7 @@ class UCIDiabetesLoader(DatasetLoader):
             'insulin_dose',
             'meal_timestamp'
         ]
+        self.glucose_columns = ['pre_meal_glucose', 'post_meal_glucose']
 
     def download(self) -> bool:
         """
@@ -204,7 +234,13 @@ class UCIDiabetesLoader(DatasetLoader):
             if file_size == 0:
                 raise ValueError(f"Dataset file is empty: {self.dataset_path}")
 
-            sample = pd.read_csv(self.dataset_path, nrows=1)
+            try:
+                sample = pd.read_csv(self.dataset_path, nrows=1)
+            except pd.errors.EmptyDataError as e:
+                raise ValueError(
+                    f"Dataset file is empty (no header or data): {self.dataset_path}"
+                ) from e
+
             if sample.empty:
                 raise ValueError(f"Dataset file has no data rows (empty): {self.dataset_path}")
 
@@ -214,9 +250,22 @@ class UCIDiabetesLoader(DatasetLoader):
                     f"Missing required columns in {self.dataset_path}: {missing_columns}"
                 )
 
+            # Parse the sampled timestamp with the same format load() uses, so that
+            # validate() cannot pass on a file whose timestamps load() would reject.
+            # This samples the first row only; a malformed timestamp further down the
+            # file is still caught by load().
+            try:
+                pd.to_datetime(sample['meal_timestamp'], format='ISO8601')
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid timestamp format in dataset {self.dataset_path}: {e}"
+                ) from e
+
             logger.info(f"Dataset validation passed: {self.dataset_path}")
             return True
-        except (OSError, UnicodeDecodeError, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+        except FileNotFoundError:
+            raise  # file does not exist — keep FileNotFoundError
+        except (OSError, UnicodeDecodeError, pd.errors.ParserError) as e:
             raise ValueError(f"Dataset file is corrupted: {self.dataset_path}. Error: {e}") from e
 
     def load(self) -> pd.DataFrame:
@@ -244,22 +293,31 @@ class UCIDiabetesLoader(DatasetLoader):
 
             df = pd.read_csv(self.dataset_path, usecols=self.required_columns)
 
-            df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'], format='ISO8601')
+            # Scope this ValueError narrowly to the timestamp parse so the broad
+            # handler below cannot swallow unrelated ValueErrors.
+            try:
+                df['meal_timestamp'] = pd.to_datetime(df['meal_timestamp'], format='ISO8601')
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid timestamp format in dataset {self.dataset_path}: {e}"
+                ) from e
 
             # Validate glucose ranges and warn about out-of-range values
-            self._validate_and_clean_glucose(df, ['pre_meal_glucose', 'post_meal_glucose'])
+            self._validate_and_clean_glucose(df, self.glucose_columns)
 
             if df.empty:
                 raise ValueError(f"Dataset file has no data rows (empty): {self.dataset_path}")
 
             logger.info(f"Loaded {len(df)} records from UCI Diabetes dataset")
-            return df[self.required_columns]
+            return df[self.output_columns]
 
+        except FileNotFoundError:
+            raise  # file does not exist — keep FileNotFoundError
         except pd.errors.EmptyDataError as e:
             raise ValueError(f"Dataset file is empty or corrupted: {self.dataset_path}") from e
         except UnicodeDecodeError as e:
             raise ValueError(f"Error loading dataset {self.dataset_path}: {e}") from e
-        except (OSError, pd.errors.ParserError, ValueError) as e:
+        except (OSError, pd.errors.ParserError) as e:
             raise ValueError(f"Error loading dataset {self.dataset_path}: {e}") from e
 
 
@@ -286,6 +344,7 @@ class CGMacrosLoader(DatasetLoader):
             'heart_rate',
             'health_group'
         ]
+        self.glucose_columns = ['glucose']
 
         # Health group categorization based on CGMacros dataset. The released
         # cohort uses original participant IDs 1-49 with 24, 25, 37, 40 as
@@ -337,7 +396,9 @@ class CGMacrosLoader(DatasetLoader):
             ValueError: If the dataset directory cannot be read
         """
         try:
-            id_to_filename: dict[int, str] = {}
+            # Collect every candidate filename per participant ID first, so that
+            # alias resolution does not depend on os.scandir() iteration order.
+            candidates: dict[int, list[str]] = {}
             with os.scandir(self.dataset_dir) as it:
                 for entry in it:
                     if entry.is_file():
@@ -351,15 +412,33 @@ class CGMacrosLoader(DatasetLoader):
                                     entry.name, pid, MAX_PARTICIPANT_ID,
                                 )
                                 continue
-                            # If multiple files map to the same ID (e.g., participant_2.csv
-                            # and participant_02.csv), prefer the canonical form.
-                            if pid not in id_to_filename or entry.name == f"participant_{pid}.csv":
-                                id_to_filename[pid] = entry.name
-            return dict(sorted(id_to_filename.items()))
+                            candidates.setdefault(pid, []).append(entry.name)
+        except FileNotFoundError:
+            raise  # directory does not exist — keep FileNotFoundError
         except OSError as e:
             raise ValueError(
                 f"Cannot access dataset directory: {self.dataset_dir}"
             ) from e
+
+        # Resolve each ID to a single filename. When multiple files map to the
+        # same ID (e.g. participant_2.csv and participant_02.csv), prefer the
+        # canonical participant_{pid}.csv form. Reject genuinely ambiguous cases
+        # where two or more distinct non-canonical filenames map to the same ID,
+        # regardless of the order they were scanned in.
+        id_to_filename: dict[int, str] = {}
+        for pid, names in candidates.items():
+            canonical = f"participant_{pid}.csv"
+            if canonical in names:
+                id_to_filename[pid] = canonical
+            elif len(names) == 1:
+                id_to_filename[pid] = names[0]
+            else:
+                raise ValueError(
+                    f"Ambiguous participant files map to ID {pid}: "
+                    f"{sorted(names)}. Remove or rename all but one so a single "
+                    f"file maps to each participant ID."
+                )
+        return dict(sorted(id_to_filename.items()))
 
     def validate(self) -> bool:
         """
@@ -395,17 +474,14 @@ class CGMacrosLoader(DatasetLoader):
                 f"No non-dropout participant files found in: {self.dataset_dir}"
             )
 
-        # Verify at least one file is parseable with required columns
-        valid_count = 0
-        for fname in non_dropout.values():
-            filepath = os.path.join(self.dataset_dir, fname)
-            try:
-                sample = pd.read_csv(filepath, nrows=1)
-                missing = [c for c in self._expected_file_columns if c not in sample.columns]
-                if not missing and not sample.empty:
-                    valid_count += 1
-            except (pd.errors.ParserError, pd.errors.EmptyDataError, OSError, UnicodeDecodeError):
-                continue
+        # Verify at least one file fully parses. Use the same _parse_participant()
+        # path as load() (required-column checks, timestamp parsing, and exception
+        # handling) so validate() cannot pass on files load() would reject or skip.
+        valid_count = sum(
+            1
+            for pid, fname in non_dropout.items()
+            if self._parse_participant(pid, filename=fname) is not None
+        )
 
         if valid_count == 0:
             raise ValueError(
@@ -473,9 +549,19 @@ class CGMacrosLoader(DatasetLoader):
 
             df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601')
 
+            # Time-series splits downstream assume each participant's rows are in
+            # chronological order; file order is not guaranteed to be. Sort here so a
+            # mis-ordered file cannot leak future readings into a training split.
+            if not df['timestamp'].is_monotonic_increasing:
+                logger.warning(
+                    "Participant %s rows were not in chronological order; sorting by timestamp",
+                    participant_id,
+                )
+                df = df.sort_values('timestamp', ignore_index=True)
+
             # Validate and clean glucose values, warn about out-of-range values
             self._validate_and_clean_glucose(
-                df, ['glucose'], context=f"Participant {participant_id}"
+                df, self.glucose_columns, context=f"Participant {participant_id}"
             )
 
             return df
@@ -523,10 +609,12 @@ class CGMacrosLoader(DatasetLoader):
 
             df = self._parse_participant(participant_id, filename=filename)
             if df is not None:
-                all_data.append(df[self.required_columns])
+                all_data.append(df[self.output_columns])
 
         if len(all_data) == 0:
-            raise ValueError("No valid participant data found in dataset")
+            raise ValueError(
+                f"No parseable participant data found in any file under: {self.dataset_dir}"
+            )
 
         combined_df = pd.concat(all_data, ignore_index=True)
 

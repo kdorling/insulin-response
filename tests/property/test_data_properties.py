@@ -11,7 +11,7 @@ import shutil
 import tempfile
 import os
 
-from src.data_preprocessing import UCIDiabetesLoader, CGMacrosLoader, DROPOUT_PARTICIPANTS, MAX_PARTICIPANT_ID, MIN_GLUCOSE, MAX_GLUCOSE
+from insulin_response.data_preprocessing import UCIDiabetesLoader, CGMacrosLoader, DROPOUT_PARTICIPANTS, MAX_PARTICIPANT_ID, MIN_GLUCOSE, MAX_GLUCOSE
 
 
 # Generators for test data
@@ -191,5 +191,5 @@ def test_track_b_load_raises_on_no_valid_data():
         )
 
         loader = CGMacrosLoader(data_dir=temp_dir)
-        with pytest.raises(ValueError, match="No valid participant data"):
+        with pytest.raises(ValueError, match="No parseable participant data"):
             loader.load()
