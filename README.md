@@ -54,7 +54,14 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. Verify installation:
+4. Install the project package (editable). The code lives in a `src/` layout, so
+   `import insulin_response...` — including from the test suite — only resolves
+   after this step:
+```bash
+pip install -e .
+```
+
+5. Verify installation:
 ```bash
 python verify_dependencies.py
 ```

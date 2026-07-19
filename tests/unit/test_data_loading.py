@@ -1846,6 +1846,23 @@ class TestTrackAValidateChecksTimestamps:
             with pytest.raises(ValueError, match="Invalid timestamp format"):
                 loader.validate()
 
+    def test_validate_rejects_bad_timestamp_after_first_row(self):
+        """A valid first row must not mask a malformed timestamp further down the file.
+
+        validate() is a preflight check; if it only inspects row 0 it reports success
+        on exactly the corrupted files it exists to catch, and load() fails later.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            os.makedirs(os.path.dirname(loader.dataset_path), exist_ok=True)
+            _write_track_a_csv(
+                loader.dataset_path,
+                timestamps=['2024-01-01 00:00:00', 'not-a-date'],
+            )
+
+            with pytest.raises(ValueError, match="Invalid timestamp format"):
+                loader.validate()
+
     def test_validate_accepts_iso_timestamps(self):
         """Well-formed ISO8601 timestamps should still pass validation."""
         with tempfile.TemporaryDirectory() as temp_dir:

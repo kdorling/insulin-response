@@ -250,18 +250,20 @@ class UCIDiabetesLoader(DatasetLoader):
                     f"Missing required columns in {self.dataset_path}: {missing_columns}"
                 )
 
-            # Parse the sampled timestamp with the same format load() uses, so that
+            # Parse the whole timestamp column with the same format load() uses, so
             # validate() cannot pass on a file whose timestamps load() would reject.
-            # This samples the first row only; a malformed timestamp further down the
-            # file is still caught by load().
+            # Sampling only the first row would report success on exactly the
+            # corrupted files this preflight exists to catch; reading one column is
+            # cheap next to the full load().
             try:
-                pd.to_datetime(sample['meal_timestamp'], format='ISO8601')
+                timestamps = pd.read_csv(self.dataset_path, usecols=['meal_timestamp'])
+                pd.to_datetime(timestamps['meal_timestamp'], format='ISO8601')
             except ValueError as e:
                 raise ValueError(
                     f"Invalid timestamp format in dataset {self.dataset_path}: {e}"
                 ) from e
 
-            logger.info(f"Dataset validation passed: {self.dataset_path}")
+            logger.info("Dataset validation passed: %s", self.dataset_path)
             return True
         except FileNotFoundError:
             raise  # file does not exist — keep FileNotFoundError
@@ -308,7 +310,7 @@ class UCIDiabetesLoader(DatasetLoader):
             if df.empty:
                 raise ValueError(f"Dataset file has no data rows (empty): {self.dataset_path}")
 
-            logger.info(f"Loaded {len(df)} records from UCI Diabetes dataset")
+            logger.info("Loaded %d records from UCI Diabetes dataset", len(df))
             return df[self.output_columns]
 
         except FileNotFoundError:
@@ -490,8 +492,10 @@ class CGMacrosLoader(DatasetLoader):
             )
 
         logger.info(
-            f"Dataset validation passed: found {valid_count} valid non-dropout "
-            f"participant files out of {len(non_dropout)} total"
+            "Dataset validation passed: found %d valid non-dropout "
+            "participant files out of %d total",
+            valid_count,
+            len(non_dropout),
         )
         return True
 
@@ -508,7 +512,9 @@ class CGMacrosLoader(DatasetLoader):
         for group, ids in self.health_groups.items():
             if participant_id in ids:
                 return group
-        logger.warning(f"Unknown participant ID {participant_id}, cannot assign health group")
+        logger.warning(
+            "Unknown participant ID %s, cannot assign health group", participant_id
+        )
         return 'unknown'
 
     def _parse_participant(self, participant_id: int,
@@ -528,20 +534,24 @@ class CGMacrosLoader(DatasetLoader):
         participant_file = os.path.join(self.dataset_dir, filename)
 
         if not os.path.exists(participant_file):
-            logger.debug(f"Participant file not found: {participant_file}")
+            logger.debug("Participant file not found: %s", participant_file)
             return None
 
         try:
             df = pd.read_csv(participant_file)
 
             if df.empty:
-                logger.warning(f"Participant {participant_id} file has no data rows (headers only)")
+                logger.warning(
+                    "Participant %s file has no data rows (headers only)", participant_id
+                )
                 return None
 
             expected_file_columns = self._expected_file_columns
             missing = [c for c in expected_file_columns if c not in df.columns]
             if missing:
-                logger.error(f"Participant {participant_id} missing columns: {missing}")
+                logger.error(
+                    "Participant %s missing columns: %s", participant_id, missing
+                )
                 return None
 
             df['participant_id'] = participant_id
@@ -572,7 +582,7 @@ class CGMacrosLoader(DatasetLoader):
             UnicodeDecodeError,
             OSError,
         ) as e:
-            logger.error(f"Error parsing participant {participant_id}: {e}")
+            logger.error("Error parsing participant %s: %s", participant_id, e)
             return None
 
     def load(self) -> pd.DataFrame:
@@ -604,7 +614,7 @@ class CGMacrosLoader(DatasetLoader):
         all_data = []
         for participant_id, filename in id_to_filename.items():
             if participant_id in DROPOUT_PARTICIPANTS:
-                logger.info(f"Excluding dropout participant: {participant_id}")
+                logger.info("Excluding dropout participant: %s", participant_id)
                 continue
 
             df = self._parse_participant(participant_id, filename=filename)
@@ -618,5 +628,7 @@ class CGMacrosLoader(DatasetLoader):
 
         combined_df = pd.concat(all_data, ignore_index=True)
 
-        logger.info(f"Loaded {len(combined_df)} records from {len(all_data)} participants")
+        logger.info(
+            "Loaded %d records from %d participants", len(combined_df), len(all_data)
+        )
         return combined_df

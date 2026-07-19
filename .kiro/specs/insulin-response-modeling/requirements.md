@@ -34,7 +34,7 @@ This document specifies the requirements for an insulin response modeling system
 4. WHEN the Data_Pipeline processes Track_B data, THE System SHALL parse per-participant CSV files containing CGM readings, meal macronutrients, activity data, heart rate, demographics, blood analysis, and gut microbiome data
 5. IF participants 24, 25, 37, or 40 are encountered, THEN THE System SHALL exclude their data from processing
 6. WHEN parsing CGMacros data, THE System SHALL categorize participants into health groups (15 healthy, 16 pre-diabetic, 14 Type 2 diabetic)
-7. IF the CGMacros dataset is unavailable, THEN THE System SHALL log an error and provide guidance for synthetic data generation
+7. IF the CGMacros dataset is unavailable, THEN THE System SHALL log an error naming the expected path and required layout, and SHALL raise `FileNotFoundError` without substituting synthetic data — an absent dataset is an unrecoverable precondition failure, not a degraded mode
 
 ### Requirement 2: Feature Engineering
 
