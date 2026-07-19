@@ -83,6 +83,60 @@ class DatasetLoader(ABC):
             glucose_flag_column(c) for c in self.glucose_columns
         ]
 
+    def _coerce_numeric_column(self, df: pd.DataFrame, col: str,
+                               ctx: str = "") -> pd.Series:
+        """
+        Coerce one column to numeric in place, warning about values that were lost.
+
+        Non-numeric entries become NaN. Values that were already missing are not
+        counted, so the warning reports only corruption introduced by the coercion
+        rather than pre-existing gaps.
+
+        Args:
+            df: DataFrame to modify in place
+            col: Column name to coerce
+            ctx: Optional prefix for log messages (e.g. "Participant 3: ")
+
+        Returns:
+            The coerced column, for callers that need it for further checks
+        """
+        if pd.api.types.is_numeric_dtype(df[col]):
+            return df[col]
+
+        original_na = df[col].isna()
+        vals = pd.to_numeric(df[col], errors='coerce')
+        df[col] = vals  # Ensure numeric types for downstream tasks
+
+        n_non_numeric = (vals.isna() & ~original_na).sum()
+        if n_non_numeric > 0:
+            logger.warning(
+                "%s%s non-numeric values in '%s' were coerced to NaN",
+                ctx,
+                n_non_numeric,
+                col,
+            )
+        return vals
+
+    def _coerce_numeric_columns(self, df: pd.DataFrame, columns: list[str],
+                                context: str = "") -> None:
+        """
+        Coerce numeric predictor columns that carry no physiological range check.
+
+        Glucose has its own helper because it additionally flags out-of-range rows.
+        Every other numeric predictor still has to reach the models as a number: a
+        single non-numeric sentinel otherwise leaves the whole column as object
+        dtype, which silently corrupts training rather than failing loudly.
+
+        Args:
+            df: DataFrame to modify in place
+            columns: Numeric column names to coerce
+            context: Optional context string for log messages
+        """
+        ctx = f"{context}: " if context else ""
+        for col in columns:
+            if col in df.columns:
+                self._coerce_numeric_column(df, col, ctx)
+
     def _validate_and_clean_glucose(self, df: pd.DataFrame, glucose_columns: list[str],
                                     context: str = "") -> None:
         """
@@ -105,20 +159,7 @@ class DatasetLoader(ABC):
                 continue
 
             ctx = f"{context}: " if context else ""
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                vals = pd.to_numeric(df[col], errors='coerce')
-                # Warn about non-numeric values that were coerced to NaN
-                n_non_numeric = vals.isna().sum() - df[col].isna().sum()
-                df[col] = vals  # Ensure numeric types for downstream tasks
-                if n_non_numeric > 0:
-                    logger.warning(
-                        "%s%s non-numeric values in '%s' were coerced to NaN",
-                        ctx,
-                        n_non_numeric,
-                        col,
-                    )
-            else:
-                vals = df[col]
+            vals = self._coerce_numeric_column(df, col, ctx)
 
             # NaN compares False on both sides, so missing values are not flagged.
             out_of_range = (vals < MIN_GLUCOSE) | (vals > MAX_GLUCOSE)
@@ -195,6 +236,9 @@ class UCIDiabetesLoader(DatasetLoader):
             'meal_timestamp'
         ]
         self.glucose_columns = ['pre_meal_glucose', 'post_meal_glucose']
+        # Numeric predictors without a physiological range check of their own;
+        # still coerced so a corrupted value cannot reach the models as a string.
+        self.numeric_columns = ['insulin_dose']
 
     def download(self) -> bool:
         """
@@ -310,6 +354,7 @@ class UCIDiabetesLoader(DatasetLoader):
 
             # Validate glucose ranges and warn about out-of-range values
             self._validate_and_clean_glucose(df, self.glucose_columns)
+            self._coerce_numeric_columns(df, self.numeric_columns)
 
             if df.empty:
                 raise ValueError(f"Dataset file has no data rows (empty): {self.dataset_path}")
@@ -351,6 +396,9 @@ class CGMacrosLoader(DatasetLoader):
             'health_group'
         ]
         self.glucose_columns = ['glucose']
+        # Numeric predictors without a physiological range check of their own;
+        # still coerced so a corrupted value cannot reach the models as a string.
+        self.numeric_columns = ['carbs', 'fat', 'protein', 'activity', 'heart_rate']
 
         # Health group categorization based on CGMacros dataset. The released
         # cohort uses original participant IDs 1-49 with 24, 25, 37, 40 as
@@ -594,6 +642,9 @@ class CGMacrosLoader(DatasetLoader):
             # Validate and clean glucose values, warn about out-of-range values
             self._validate_and_clean_glucose(
                 df, self.glucose_columns, context=f"Participant {participant_id}"
+            )
+            self._coerce_numeric_columns(
+                df, self.numeric_columns, context=f"Participant {participant_id}"
             )
 
             return df

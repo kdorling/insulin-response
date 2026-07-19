@@ -44,6 +44,14 @@ description: Defensive coding guidelines for error handling, validation, securit
       logger.warning("%s non-numeric values in '%s' were coerced to NaN", n_non_numeric, col)
   ```
 
+- Coerce **every** numeric predictor, not only the ones with a range check. A column
+  that gets a physiological range check (glucose) is easy to remember; the ones that
+  do not (`insulin_dose`, `carbs`, `fat`, `protein`, `activity`, `heart_rate`) are
+  the ones that slip through. A single non-numeric sentinel leaves the whole column
+  as `object` dtype, and downstream model/EDA code treats it as numeric — so the
+  corruption surfaces far from its cause, if at all. Keep range-checking and
+  coercion as separate helpers so a column can get the second without the first.
+
 ## Empty Dataset Rejection
 
 - Both `validate()` and `load()` must reject datasets that contain only headers (zero data rows). Read a sample and check `.empty` before proceeding. A truly empty (0-byte / no-header) file raises `pd.errors.EmptyDataError` from `pd.read_csv()` before `.empty` can be evaluated, so catch it explicitly and re-raise as `ValueError` with the path.

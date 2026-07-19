@@ -2025,3 +2025,65 @@ class TestGlucoseOutOfRangeFlag:
             assert glucose_flag_column('glucose') not in loader.required_columns
             assert glucose_flag_column('glucose') not in loader._expected_file_columns
             assert glucose_flag_column('glucose') in loader.output_columns
+
+
+class TestNonGlucoseNumericCoercion:
+    """Numeric predictors other than glucose must not reach models as object dtype.
+
+    Only the glucose columns were coerced, so a non-numeric sentinel in any other
+    numeric predictor left that column as strings. Downstream model and EDA code
+    treats these as numeric, so the corruption surfaces far from its cause.
+    """
+
+    def test_track_a_insulin_dose_is_coerced(self, caplog):
+        """A bad insulin_dose value should become NaN, not a string."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            with open(loader.dataset_path, "w") as f:
+                f.write("pre_meal_glucose,post_meal_glucose,insulin_dose,meal_timestamp\n")
+                f.write("100.0,140.0,5.0,2024-01-01T12:00:00\n")
+                f.write("100.0,140.0,10u,2024-01-01T13:00:00\n")
+
+            with caplog.at_level(
+                logging.WARNING, logger="insulin_response.data_preprocessing"
+            ):
+                result = loader.load()
+
+            assert pd.api.types.is_numeric_dtype(result['insulin_dose'])
+            assert pd.isna(result['insulin_dose'].iloc[1])
+            assert any(
+                "insulin_dose" in r.message and "non-numeric" in r.message
+                for r in caplog.records
+            ), "the coerced value should be reported, not silently dropped"
+
+    def test_track_b_predictors_are_coerced(self, caplog):
+        """Bad carbs/heart_rate values should become NaN, not strings."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = CGMacrosLoader(data_dir=temp_dir)
+            os.makedirs(loader.dataset_dir, exist_ok=True)
+            path = os.path.join(loader.dataset_dir, "participant_1.csv")
+            with open(path, "w") as f:
+                f.write("timestamp,glucose,carbs,fat,protein,activity,heart_rate\n")
+                f.write("2024-01-01T12:00:00,100.0,30.0,10.0,20.0,1.0,70.0\n")
+                f.write("2024-01-01T12:05:00,100.0,n/a,10.0,20.0,1.0,--\n")
+
+            with caplog.at_level(
+                logging.WARNING, logger="insulin_response.data_preprocessing"
+            ):
+                result = loader.load()
+
+            for col in ('carbs', 'fat', 'protein', 'activity', 'heart_rate'):
+                assert pd.api.types.is_numeric_dtype(result[col]), f"{col} left as object"
+            assert pd.isna(result['carbs'].iloc[1])
+            assert pd.isna(result['heart_rate'].iloc[1])
+
+    def test_clean_numeric_data_is_unchanged(self):
+        """Coercion must not perturb values that are already numeric."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            _write_track_a_csv(loader.dataset_path)
+
+            result = loader.load()
+
+            assert result['insulin_dose'].tolist() == [5.0, 5.0]
+            assert not result['insulin_dose'].isna().any()
