@@ -2,6 +2,10 @@
 
 ## Language and Runtime
 - Python 3.x
+- Create the project virtual environment once with `python -m venv venv` (`py -m venv venv` on Windows), then always use it for Python commands and package installs.
+  - POSIX: `./venv/bin/python`, `./venv/bin/pip` (and `./venv/bin/pytest`, `./venv/bin/jupyter`, etc.).
+  - Windows: the equivalents under `venv\Scripts\` — `venv\Scripts\python.exe`, `venv\Scripts\pip.exe`, `venv\Scripts\pytest.exe`, `venv\Scripts\jupyter.exe`.
+  - Prefer these over bare command names so the correct environment is always used.
 
 ## Core Dependencies
 - pandas, numpy — data manipulation
@@ -16,11 +20,12 @@
 
 ## Project Structure
 ```
-src/                    # Core implementation modules
-  data_preprocessing.py # Data loading and feature engineering
-  statistical_models.py # Baseline statistical models
-  ml_models.py         # Machine learning models
-  evaluate.py          # Model evaluation and metrics
+src/                        # Container directory (src-layout; not a package)
+  insulin_response/         # Core implementation package
+    data_preprocessing.py   # Data loading and feature engineering
+    statistical_models.py   # Baseline statistical models
+    ml_models.py            # Machine learning models
+    evaluate.py             # Model evaluation and metrics
 tests/
   unit/               # Unit tests for specific scenarios
   property/           # Property-based tests for correctness
@@ -33,39 +38,47 @@ outputs/             # Visualizations and results
 
 ## Common Commands
 
+Paths below use the POSIX venv layout (`./venv/bin/<tool>`). On Windows, use the
+equivalent under `venv\Scripts\` (e.g. `venv\Scripts\pytest.exe`,
+`venv\Scripts\python.exe`, `venv\Scripts\jupyter.exe`).
+
 ### Setup
 ```bash
-pip install -r requirements.txt
+# Create the virtual environment once (before using ./venv/... below)
+python -m venv venv                             # Windows: py -m venv venv
+
+# Install dependencies
+./venv/bin/pip install -r requirements.txt      # Windows: venv\Scripts\pip.exe install -r requirements.txt
 ```
 
 ### Testing
 ```bash
 # Run all tests
-pytest
+./venv/bin/pytest
 
 # Run unit tests only
-pytest tests/unit/
+./venv/bin/pytest tests/unit/
 
 # Run property tests only
-pytest tests/property/
+./venv/bin/pytest tests/property/
 
 # Run with coverage
-pytest --cov=src
+./venv/bin/pytest --cov=insulin_response
 ```
 
 ### Data Processing
 ```bash
-python src/data_preprocessing.py
+./venv/bin/python src/insulin_response/data_preprocessing.py
 ```
 
 ### Model Evaluation
 ```bash
-python src/evaluate.py
+./venv/bin/python src/insulin_response/evaluate.py
 ```
 
 ### Exploratory Analysis
 ```bash
-jupyter notebook notebooks/EDA.ipynb
+./venv/bin/jupyter notebook notebooks/EDA.ipynb
 ```
 
 ## Testing Philosophy

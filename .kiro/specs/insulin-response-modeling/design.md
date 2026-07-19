@@ -39,7 +39,7 @@ graph TD
 
 ## Components and Interfaces
 
-### 1. Data Pipeline (`src/data_preprocessing.py`)
+### 1. Data Pipeline (`src/insulin_response/data_preprocessing.py`)
 
 **Purpose**: Acquire and preprocess datasets for both Track A and Track B.
 
@@ -57,7 +57,8 @@ class UCIDiabetesLoader(DatasetLoader):
     def download() -> bool
     def parse() -> pd.DataFrame
     # Returns: DataFrame with columns [pre_meal_glucose, post_meal_glucose, 
-    #          insulin_dose, meal_timestamp]
+    #          insulin_dose, meal_timestamp] plus the derived
+    #          *_out_of_range flags for each glucose column
 
 class CGMacrosLoader(DatasetLoader):
     """Loads CGMacros dataset (Track B)"""
@@ -65,7 +66,10 @@ class CGMacrosLoader(DatasetLoader):
     def parse_participant(participant_id: int) -> pd.DataFrame
     def exclude_dropouts() -> List[int]
     # Returns: DataFrame with columns [participant_id, timestamp, glucose, 
-    #          carbs, fat, protein, activity, heart_rate, health_group]
+    #          carbs, fat, protein, activity, heart_rate, health_group] plus the
+    #          derived glucose_out_of_range flag. Rows are sorted by timestamp
+    #          within each participant so downstream time-series splits cannot
+    #          train on future readings.
 
 class FeatureEngineer:
     """Transforms raw data into model features"""
@@ -82,7 +86,7 @@ class FeatureEngineer:
 - Required columns must be present (raises ValueError if missing)
 - Participants 24, 25, 37, 40 must be excluded from CGMacros data
 
-### 2. Statistical Models (`src/statistical_models.py`)
+### 2. Statistical Models (`src/insulin_response/statistical_models.py`)
 
 **Purpose**: Implement baseline statistical models for both tracks.
 
@@ -111,7 +115,7 @@ class ARIMAModel(BaselineModel):
     # Predicts: next N glucose values from historical CGM readings
 ```
 
-### 3. ML Models (`src/ml_models.py`)
+### 3. ML Models (`src/insulin_response/ml_models.py`)
 
 **Purpose**: Implement machine learning models for both tracks.
 
@@ -156,7 +160,7 @@ class TransformerModel(MLModel):
     # Output shape: (batch, prediction_horizon)
 ```
 
-### 4. Evaluator (`src/evaluate.py`)
+### 4. Evaluator (`src/insulin_response/evaluate.py`)
 
 **Purpose**: Evaluate models using cross-validation and compute performance metrics.
 
@@ -199,6 +203,9 @@ class Visualizer:
 TrackARecord = {
     'pre_meal_glucose': float,      # mg/dL, range [20, 600]
     'post_meal_glucose': float,     # mg/dL, range [20, 600]
+    'pre_meal_glucose_out_of_range': bool,   # derived by the loader; True when the
+                                             # reading falls outside [20, 600]
+    'post_meal_glucose_out_of_range': bool,  # derived by the loader
     'glucose_rise': float,          # mg/dL, computed as post - pre
     'insulin_dose': float,          # units
     'meal_timestamp': datetime,
@@ -213,9 +220,12 @@ TrackARecord = {
 
 ```python
 TrackBRecord = {
-    'participant_id': int,          # 1-45, excluding [24, 25, 37, 40]
+    'participant_id': int,          # original CGMacros IDs 1-49, excluding
+                                    # dropouts [24, 25, 37, 40] -> 45 participants
     'timestamp': datetime,
     'glucose': float,               # mg/dL from CGM, range [20, 600]
+    'glucose_out_of_range': bool,   # derived by the loader; True when the reading
+                                    # falls outside [20, 600]
     'carbs': float,                 # grams
     'fat': float,                   # grams
     'protein': float,               # grams
@@ -241,6 +251,8 @@ ModelResult = {
     },
     'hyperparams': dict,
     'cv_scores': List[float],
+    'converged': bool,              # False if training hit a convergence failure;
+                                    # must be surfaced in any cross-model comparison
     'training_time': float,         # seconds
     'predictions': np.ndarray,
     'actuals': np.ndarray
@@ -308,9 +320,9 @@ The following properties represent the unique, non-redundant validation requirem
 
 ### Property 8: Outlier Detection
 
-*For any* glucose measurement, the system must flag it as an outlier if and only if the value is less than 20 mg/dL or greater than 600 mg/dL.
+*For any* non-missing glucose measurement, the system must flag it as an outlier if and only if the value is less than 20 mg/dL or greater than 600 mg/dL. Missing (NaN) values are never flagged as outliers; they are accounted for by the missing-data audit (Property 7).
 
-**Validates: Requirements 3.5, 10.3**
+**Validates: Requirements 3.5, 3.7, 10.3**
 
 ### Property 9: Train-Test Separation
 
@@ -332,7 +344,9 @@ The following properties represent the unique, non-redundant validation requirem
 
 ### Property 12: Temporal Ordering in Time-Series Splits
 
-*For any* time-series data split, all timestamps in the test set must be strictly greater than all timestamps in the training set.
+*For any* time-series data split, and *for any* participant appearing in both the training and test sets, all of that participant's test-set timestamps must be strictly greater than all of that participant's training-set timestamps.
+
+Note: the ordering constraint is scoped **per participant**, not globally. Participants were recorded over overlapping and differing calendar windows, so a methodologically correct per-participant temporal split will routinely place one participant's held-out tail earlier in calendar time than another participant's training data. A global timestamp ordering requirement would reject correct implementations.
 
 **Validates: Requirements 6.2**
 
@@ -350,13 +364,17 @@ The following properties represent the unique, non-redundant validation requirem
 
 ### Property 15: Hyperparameter Search Execution
 
-*For any* ML model and parameter grid, the hyperparameter search must complete and return a dictionary of best parameters that improves or maintains performance compared to default parameters.
+*For any* ML model and parameter grid, the hyperparameter search must complete and return a dictionary of best parameters such that (a) every returned parameter value is drawn from the supplied search space, and (b) the best candidate's cross-validated score is greater than or equal to the cross-validated score of every other candidate evaluated in the same search.
+
+Note: this property deliberately does **not** assert that tuned parameters beat default parameters. That only holds if the defaults are themselves in the search space *and* both are scored on identical folds; measured on held-out test data, tuning can legitimately underperform defaults. Asserting otherwise would produce a flaky test. Requirement 7.4's improvement-over-defaults figure is a logged diagnostic, not an invariant.
 
 **Validates: Requirements 7.1, 7.3, 7.4**
 
 ### Property 16: Cross-Validation in Hyperparameter Search
 
-*For any* hyperparameter search process, cross-validation must be used to evaluate each parameter combination.
+*For any* hyperparameter search over a search space of size N with cv=k, the returned search results must contain per-candidate cross-validation records covering all N candidates, each with k fold scores.
+
+Note: the original phrasing ("cross-validation must be used to evaluate each parameter combination") asserted an implementation detail that is not observable from the search's outputs. This restatement expresses the same intent as an observable postcondition on the returned `cv_results_` structure, and is verifiable as a structural assertion.
 
 **Validates: Requirements 7.2**
 
@@ -378,6 +396,12 @@ The following properties represent the unique, non-redundant validation requirem
 
 **Validates: Requirements 10.2**
 
+### Property 20: Dropout Participant Exclusion
+
+*For any* CGMacros dataset directory, regardless of which participant files are present, no record in the loaded output may have a `participant_id` in {24, 25, 37, 40}.
+
+**Validates: Requirements 1.5**
+
 ## Error Handling
 
 The system implements defensive error handling at multiple levels:
@@ -386,7 +410,8 @@ The system implements defensive error handling at multiple levels:
 
 - **Missing Files**: Raise `FileNotFoundError` with path information
 - **Corrupted Files**: Raise `ValueError` with file name and corruption details
-- **Network Errors**: Retry up to 3 times with exponential backoff, then raise `ConnectionError`
+
+Note: the system performs no network I/O. Both `download()` methods raise `NotImplementedError` by design — the loaders consume a normalized, pre-processed on-disk schema. Network retry/backoff handling is therefore deliberately absent, and must not be added until a real `download()` implementation is in scope.
 
 ### Data Validation Errors
 
@@ -398,14 +423,15 @@ The system implements defensive error handling at multiple levels:
 ### Model Training Errors
 
 - **Insufficient Data**: Raise `ValueError` with minimum data requirements (e.g., "Minimum 100 samples required, got 50")
-- **Convergence Failures**: Log warning, return partially trained model with flag
+- **Convergence Failures**: Log warning and record a `converged: False` field on the model's `ModelResult`. A non-converged model MUST NOT be reported in a cross-model comparison without that status being surfaced alongside its metrics — a silently degraded model entering a benchmark table is the failure mode `.kiro/steering/defensive-coding.md` exists to prevent.
 - **NaN/Inf in Predictions**: Raise `RuntimeError` with diagnostic information about input data statistics
 
 ### Fallback Strategies
 
-- **CGMacros Unavailable**: Log error, provide instructions for synthetic data generation, do not crash
+- **CGMacros Unavailable**: Log an error naming the expected path and the required layout, then raise `FileNotFoundError`. Per `.kiro/steering/defensive-coding.md` the loader fails loudly rather than continuing with no data; "do not crash" is not the contract. An absent dataset is an unrecoverable precondition failure, not a degraded mode.
 - **Visualization Failures**: Log error, continue with other visualizations
-- **Hyperparameter Search Timeout**: Return best parameters found so far
+
+Note: no hyperparameter-search timeout is specified in Requirement 7, so none is implemented. If a timeout is added later it needs an acceptance criterion first — returning "best parameters found so far" from a truncated search silently changes what the reported result means.
 
 ## Testing Strategy
 
