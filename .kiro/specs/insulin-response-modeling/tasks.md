@@ -67,6 +67,23 @@ This implementation plan breaks down the insulin response modeling system into d
       invariant over any mix of present participant files, so it belongs in a
       property rather than a single example (see design "Testing Balance")
 
+  - [ ] 2.9 Implement CGMacros ingest: PhysioNet layout -> normalized schema
+    - Walk the published dataset layout (`CGMacros-0XX/CGMacros-0YY.csv` plus the
+      cohort `bio.csv`) rather than requiring top-level `participant_*.csv`
+    - Map raw PhysioNet columns onto `CGMacrosLoader.required_columns`
+      (e.g. CGM reading -> `glucose`, `HR` -> `heart_rate`, macronutrient columns
+      -> `carbs`/`fat`/`protein`), including unit and timestamp normalization
+    - Derive `participant_id` from the directory/file naming rather than the caller
+    - Keep the normalization in the ingest step, not in `_parse_participant()`:
+      per design.md the loaders consume an already-normalized on-disk schema, and
+      that boundary is what task 2.4 was built against
+    - Blocked on: access to PhysioNet CGMacros v1.0.0, so the column mapping can be
+      verified against the real files instead of written from the published docs
+    - Rationale: until this exists, Track B is only runnable against hand-normalized
+      files, and `_discover_participant_ids()` returns an empty mapping for a
+      straight unpack of the published dataset (raised in PR #1 review)
+    - _Requirements: 1.3, 1.4_
+
 - [ ] 3. Implement feature engineering
   - [ ] 3.1 Create FeatureEngineer class
     - Implement `calculate_time_since_meal()` to compute time differences
