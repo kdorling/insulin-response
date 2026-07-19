@@ -1863,6 +1863,36 @@ class TestTrackAValidateChecksTimestamps:
             with pytest.raises(ValueError, match="Invalid timestamp format"):
                 loader.validate()
 
+    def test_undecodable_file_reports_corruption_not_timestamp_error(self, monkeypatch):
+        """A decode error during the timestamp read must be reported as corruption.
+
+        UnicodeDecodeError subclasses ValueError, so reading the timestamp column
+        inside an `except ValueError` block misattributes file corruption to the
+        timestamp parse and hides the real cause. The header sample read earlier in
+        validate() only touches the start of the file, so corruption further in is
+        first seen by the timestamp-column read.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loader = UCIDiabetesLoader(data_dir=temp_dir)
+            os.makedirs(os.path.dirname(loader.dataset_path), exist_ok=True)
+            _write_track_a_csv(loader.dataset_path)
+
+            real_read_csv = pd.read_csv
+
+            def fail_on_column_read(*args, **kwargs):
+                # The header sample passes nrows; the full timestamp read passes
+                # usecols. Only the latter should surface the decode error.
+                if 'usecols' in kwargs:
+                    raise UnicodeDecodeError(
+                        'utf-8', b'\xff', 0, 1, 'invalid start byte'
+                    )
+                return real_read_csv(*args, **kwargs)
+
+            monkeypatch.setattr(pd, 'read_csv', fail_on_column_read)
+
+            with pytest.raises(ValueError, match="corrupted"):
+                loader.validate()
+
     def test_validate_accepts_iso_timestamps(self):
         """Well-formed ISO8601 timestamps should still pass validation."""
         with tempfile.TemporaryDirectory() as temp_dir:

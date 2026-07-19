@@ -255,8 +255,12 @@ class UCIDiabetesLoader(DatasetLoader):
             # Sampling only the first row would report success on exactly the
             # corrupted files this preflight exists to catch; reading one column is
             # cheap next to the full load().
+            # Read outside the handler below: UnicodeDecodeError subclasses
+            # ValueError, so a decode failure here would otherwise be reported as a
+            # timestamp-format problem instead of falling through to the corruption
+            # handler that names the real cause.
+            timestamps = pd.read_csv(self.dataset_path, usecols=['meal_timestamp'])
             try:
-                timestamps = pd.read_csv(self.dataset_path, usecols=['meal_timestamp'])
                 pd.to_datetime(timestamps['meal_timestamp'], format='ISO8601')
             except ValueError as e:
                 raise ValueError(
@@ -366,6 +370,22 @@ class CGMacrosLoader(DatasetLoader):
             if c not in ('participant_id', 'health_group')
         ]
 
+    @property
+    def _layout_hint(self) -> str:
+        """
+        Description of the on-disk layout this loader expects.
+
+        Derived from `_expected_file_columns` so the guidance in error messages
+        cannot drift from the contract actually enforced when parsing. Required by
+        Requirement 1.7: an unavailable dataset must report both the expected path
+        and the required layout.
+        """
+        return (
+            f"Expected layout: one 'participant_<id>.csv' per participant "
+            f"(IDs 1-{MAX_PARTICIPANT_ID}) directly inside '{self.dataset_dir}', "
+            f"each containing columns: {', '.join(self._expected_file_columns)}."
+        )
+
     def download(self) -> bool:
         """
         Download/clone the CGMacros dataset repository.
@@ -378,8 +398,8 @@ class CGMacrosLoader(DatasetLoader):
         """
         raise NotImplementedError(
             "CGMacros dataset download is not yet implemented. "
-            "Please provide the dataset files manually or configure a real repository source. "
-            "Expected structure: data/cgmacros/participant_*.csv files."
+            "Please provide the dataset files manually or configure a real "
+            f"repository source. {self._layout_hint}"
         )
 
     def _discover_participant_ids(self) -> dict[int, str]:
@@ -455,7 +475,9 @@ class CGMacrosLoader(DatasetLoader):
             ValueError: If dataset is incomplete or no valid participant files found
         """
         if not os.path.exists(self.dataset_dir):
-            raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
+            raise FileNotFoundError(
+                f"Dataset directory not found: {self.dataset_dir}. {self._layout_hint}"
+            )
 
         # Use shared discovery helper for consistency with load()
         id_to_filename = self._discover_participant_ids()
@@ -599,7 +621,8 @@ class CGMacrosLoader(DatasetLoader):
         """
         if not os.path.exists(self.dataset_dir):
             error_msg = (f"Dataset directory not found: {self.dataset_dir}. "
-                        f"Please provide the dataset files manually.")
+                        f"Please provide the dataset files manually. "
+                        f"{self._layout_hint}")
             logger.error(error_msg)
             raise FileNotFoundError(error_msg)
 
