@@ -50,17 +50,17 @@ This implementation plan breaks down the insulin response modeling system into d
     - **Property 1: Complete Field Extraction**
     - **Validates: Requirements 1.4**
   
-  - [ ] 2.6 Write property test for health group categorization
+  - [x] 2.6 Write property test for health group categorization
     - **Property 2: Health Group Categorization**
     - **Validates: Requirements 1.6**
   
-  - [ ] 2.7 Write unit tests for data loading edge cases
+  - [x] 2.7 Write unit tests for data loading edge cases
     - Test missing file error handling
     - Test corrupted file error handling
     - Test empty and header-only file rejection
     - _Requirements: 10.1_
   
-  - [ ] 2.8 Write property test for dropout participant exclusion
+  - [x] 2.8 Write property test for dropout participant exclusion
     - **Property 20: Dropout Participant Exclusion**
     - **Validates: Requirements 1.5**
     - Note: supersedes the former unit-test bullet in 2.7. Exclusion is a universal
